@@ -107,7 +107,7 @@ submodule_helper_attach () {
   if ( echo $ref | egrep '^refs/remotes/' > /dev/null ); then
     echo "Remote branch ${ref} matches"
     short_ref=${ref#refs/remotes/}
-    echo "Remote branch ${short_ref} matches"
+    echo "Auto-fast-forwarding local branches is not implemented yet."
     exit 1
   fi
 }
@@ -205,6 +205,8 @@ commands:
             non-existing revision.
 
   status  - See the status for all submodules
+
+  attach  - Re-attach your HEAD to a branch that matches your current rev.
 
   add-folder
           - add a folder that has been cloned as a submodule already
