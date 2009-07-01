@@ -1,5 +1,19 @@
 #!/usr/bin/env ruby
 
+# A git hook that automatically updates your submodules for you when you change branches or pull
+#
+# It works like this:
+# - If before you changed branches, your submodule's revision differed from what the master repo specified, your submodule is left alone
+# - If a submodule has been removed from the branch you move to, it alerts you
+# - If a submodule has been added on the branch you move to, it alerts you
+# - Otherwise, it checks out the revision for you
+#
+# Installation:
+#
+# - Install this script somewhere.  Make sure it's executable
+# - In your git repository, create .git/hooks/post-checkout and .git/hooks/post-merge. Make them executable
+# - Put the full path of this script in there
+
 module GitMethods
   def chdir_parent
     Dir.chdir('..') until File.directory?('.git') || Dir.pwd == '/'
@@ -59,10 +73,5 @@ previous_submodules = list_submodules('HEAD@{1}')
       system("(git show '#{current_submodules[path]}' 2> /dev/null 1> /dev/null) || git fetch")
       system("git checkout '#{current_submodules[path]}'")
     end
-  else
-
-    output_submodule_header(path)
   end
 end
-
-# git ls-files --stage | grep "^160000 " 
