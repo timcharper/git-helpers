@@ -9,6 +9,9 @@ EDITOR=ENV['EDITOR'] || 'vim'
 class GitCleanBranchesRunner
   def initialize(args, output = STDOUT, error = STDERR)
     @output, @error = output, error
+    if args.include?("-a")
+      @consider_all = true
+    end
   end
 
   def fetch_and_prune
@@ -39,7 +42,7 @@ class GitCleanBranchesRunner
 
 
   def branch_candidates
-    merged_branches
+    @branch_candidates ||= @consider_all ? branches : merged_branches
   end
 
   def edit_branch_list
