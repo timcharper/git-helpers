@@ -21,7 +21,6 @@ if [ "$STAGED_CHANGES" != "" ]; then
   exit 0
 fi
 
-git add .
 git stash
 if (git stash show -p | perl -pe 's/^(\+.*?)[ \t]*$/\1/' | git apply); then
   echo "Successfully stripped all new whitespaces"
