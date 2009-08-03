@@ -92,7 +92,7 @@ submodule_helper_attach () {
   if [ $? != 0 ]; then
     echo "no known branch is currently at ${current_rev}"
     echo "here are some suggestions: "
-    git branch --contains $current_rev
+    git branch --contains $current_rev -a | egrep -v 'no branch|HEAD'
     exit 1
   fi
   rev=${line%% *}
