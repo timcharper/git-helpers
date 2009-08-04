@@ -1,15 +1,10 @@
 #!/bin/bash
 
-if ! (which perl > /dev/null); then
-  echo "Perl not found. Needed for this script."
-  exit 1
-fi
-
 STAGED_CHANGES="$(git diff --cached)"
 if [ "$STAGED_CHANGES" != "" ]; then
   echo "Stripping trailing spaces from index"
   git reset 2> /dev/null 1> /dev/null
-  if (echo "$STAGED_CHANGES" | perl -pe 's/^(\+.*?)[ \t]*$/\1/' | git apply --cached); then
+  if (echo "$STAGED_CHANGES" | git apply --whitespace=fix --cached); then
     echo "Successfully stripped all new whitespaces from the index"
   else
     BLEW_UP_FILE="/tmp/git-strip-new-whitespace-blew-up"
@@ -22,7 +17,7 @@ if [ "$STAGED_CHANGES" != "" ]; then
 fi
 
 git stash
-if (git stash show -p | perl -pe 's/^(\+.*?)[ \t]*$/\1/' | git apply); then
+if (git stash show -p | git apply --whitespace=fix); then
   echo "Successfully stripped all new whitespaces"
   git reset 2> /dev/null 1> /dev/null
   git stash drop 2> /dev/null 1> /dev/null
