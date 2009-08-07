@@ -95,10 +95,8 @@ submodule_helper_attach () {
     git branch --contains $current_rev -a | egrep -v 'no branch|HEAD'
     exit 1
   fi
-  rev=${line%% *}
-  ref=${line##* }
-  echo $rev
-  echo $ref
+  rev=$(echo $line | awk '{print $1}')
+  ref=$(echo $line | awk '{print $3}')
   if ( echo $ref | egrep '^refs/heads/' > /dev/null ); then
     echo "ref: $ref" > .git/HEAD
     exit 0
@@ -107,7 +105,13 @@ submodule_helper_attach () {
   if ( echo $ref | egrep '^refs/remotes/' > /dev/null ); then
     echo "Remote branch ${ref} matches"
     short_ref=${ref#refs/remotes/}
-    echo "Auto-fast-forwarding local branches is not implemented yet."
+    local_ref=${ref#*/*/*/}
+    divergent_commits=$(git rev-list $ref..$local_ref)
+    if [ "$divergent_commits" == "" ]; then
+      echo "fastforwarding $local_ref to $ref"
+      git branch -f "$local_ref" "$ref"
+      git checkout "$local_ref"
+    fi
     exit 1
   fi
 }
