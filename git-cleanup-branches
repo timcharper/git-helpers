@@ -68,21 +68,39 @@ EOF
     preserve_branches
   end
 
+  def sort_branches(branches)
+    sorted_branches = {}
+    branches.each do |branch|
+      case branch
+      when %r(^refs/remotes/([^/]+)/(.+)$)
+        remote, branch = $1, $2
+        sorted_branches[remote] ||= []
+        sorted_branches[remote] << branch
+      when %r(^refs/heads/(.+)$)
+        sorted_branches[nil] ||= []
+        sorted_branches[nil] << $1
+      else
+        puts "I don't know how to delete #{branch_for_deletion}"
+      end
+    end
+    sorted_branches
+  end
+
   def delete_branches(branches_for_deletion)
+    sorted_branches = sort_branches(branches_for_deletion)
+    if sorted_branches.empty?
+      puts "No branches to delete."
+      exit 1
+    end
     puts <<EOF
 Deleting branches:
 #{branches_for_deletion.map{|b| " - #{b}"} * "\n"}
 EOF
-
-    branches_for_deletion.each do |branch_for_deletion|
-      case branch_for_deletion
-      when %r(^refs/remotes/([^/]+)/(.+)$)
-        remote, branch = $1, $2
-        system("git push #{remote} :#{branch}")
-      when %r(^refs/heads/(.+)$)
-        system("git b -D #{$1}")
+    sorted_branches.each do |remote, branches|
+      if remote.nil?
+        system(*%w[git b -D] + branches)
       else
-        puts "I don't know how to delete #{branch_for_deletion}"
+        system(*%w[git push] + [remote] + branches.map { |b| ":#{b}" })
       end
     end
   end
