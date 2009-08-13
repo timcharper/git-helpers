@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 require "tempfile.rb"
+require 'optparse'
 
 INTEGRATION_BRANCH="sprint"
 PRESERVE_ALWAYS=[INTEGRATION_BRANCH] + %w[staging master HEAD]
@@ -9,9 +10,15 @@ EDITOR=ENV['EDITOR'] || 'vim'
 class GitCleanBranchesRunner
   def initialize(args, output = STDOUT, error = STDERR)
     @output, @error = output, error
-    if args.include?("-a")
+    extend CandidateState::MergedOnly
+    @stable_branch = DEFAULT_STABLE_BRANCH
+    opts = OptionParser.new
+    opts.banner = "Usage: #{$0} [options]"
+    opts.separator "Options:"
+    opts.on("-a", "--all", "Consider all branches for deletion, regardless if they've been merged into stable") do
       @consider_all = true
     end
+    opts.parse!(args)
   end
 
   def fetch_and_prune
