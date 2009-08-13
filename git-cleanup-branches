@@ -2,12 +2,49 @@
 require "tempfile.rb"
 require 'optparse'
 
-INTEGRATION_BRANCH="sprint"
-PRESERVE_ALWAYS=[INTEGRATION_BRANCH] + %w[staging master HEAD]
+DEFAULT_STABLE_BRANCH="master"
 EDITOR=ENV['EDITOR'] || 'vim'
 
 
 class GitCleanBranchesRunner
+  module CandidateState
+    module ConsiderAll
+      def instructions
+        <<-EOF
+# The following is a list of all local and remote branches in your repository
+# To delete the branches, delete them from this list, and then save and quit
+        EOF
+      end
+
+      def branch_candidates
+        @branch_candidates ||= branches
+      end
+    end
+
+    module MergedOnly
+      def branch_candidates
+        @branch_candidates ||= (
+          candidates = []
+          branches.each do |branch|
+            next if %r(/(#{preserve_always * '|'})$) =~ branch
+            next unless `git rev-list origin/#{stable_branch}..#{branch}`.strip.empty?
+            candidates << branch
+          end
+          candidates
+        )
+      end
+
+      def instructions
+        <<-EOF
+# The following branches have been merged in to refs/remotes/origin/#{stable_branch}
+# To delete the branches, delete them from this list, and then save and quit
+        EOF
+      end
+    end
+  end
+
+  attr_reader :stable_branch
+
   def initialize(args, output = STDOUT, error = STDERR)
     @output, @error = output, error
     extend CandidateState::MergedOnly
@@ -16,9 +53,16 @@ class GitCleanBranchesRunner
     opts.banner = "Usage: #{$0} [options]"
     opts.separator "Options:"
     opts.on("-a", "--all", "Consider all branches for deletion, regardless if they've been merged into stable") do
-      @consider_all = true
+      extend CandidateState::ConsiderAll
+    end
+    opts.on("-b", "--branch [branch]", "The stable branch (default: #{@stable_branch}). If a branch is merged into this, and -a parameter not specified, consider it for deletion.") do |b|
+      @stable_branch = b
     end
     opts.parse!(args)
+  end
+
+  def preserve_always
+    [stable_branch] + %w[staging master next HEAD]
   end
 
   def fetch_and_prune
@@ -29,17 +73,6 @@ class GitCleanBranchesRunner
     end
   end
 
-  def merged_branches
-    @merged_branches ||= (
-      candidates = []
-      branches.each do |branch|
-        next if %r(/(#{PRESERVE_ALWAYS * '|'})$) =~ branch
-        next unless `git rev-list origin/#{INTEGRATION_BRANCH}..#{branch}`.strip.empty?
-        candidates << branch
-      end
-    )
-  end
-
   def branches
     %x(git for-each-ref).map do |branch_name|
       next unless %r{.+(refs/(heads|remotes).+$)}.match(branch_name)
@@ -47,18 +80,18 @@ class GitCleanBranchesRunner
     end.compact
   end
 
+  def instructions
+    raise NotImplemented
+  end
 
   def branch_candidates
-    @branch_candidates ||= @consider_all ? branches : merged_branches
+    raise NotImplemented
   end
 
   def edit_branch_list
     file = Tempfile.new("cleanup-branch")
-    file.puts <<-EOF
-# The following branches have been merged in to refs/remotes/origin/#{INTEGRATION_BRANCH}
-# To delete the branches, delete them from this list, and then save and quit
-#{branch_candidates * "\n"}
-EOF
+    file.puts instructions
+    file.puts(branch_candidates * "\n")
     file.close
     system("#{EDITOR} #{file.path}")
     preserve_branches = File.read(file.path).split("\n").grep(/^[^#].+/)
