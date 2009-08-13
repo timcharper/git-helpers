@@ -9,11 +9,8 @@ EDITOR=ENV['EDITOR'] || 'vim'
 class GitCleanBranchesRunner
   module CandidateState
     module ConsiderAll
-      def instructions
-        <<-EOF
-# The following is a list of all local and remote branches in your repository
-# To delete the branches, delete them from this list, and then save and quit
-        EOF
+      def candidate_instructions
+        "# The following is a list of all local and remote branches in your repository"
       end
 
       def branch_candidates
@@ -34,11 +31,8 @@ class GitCleanBranchesRunner
         )
       end
 
-      def instructions
-        <<-EOF
-# The following branches have been merged in to refs/remotes/origin/#{stable_branch}
-# To delete the branches, delete them from this list, and then save and quit
-        EOF
+      def candidate_instructions
+        "# The following branches have been merged in to refs/remotes/origin/#{stable_branch}"
       end
     end
   end
@@ -80,7 +74,7 @@ class GitCleanBranchesRunner
     end.compact
   end
 
-  def instructions
+  def candidate_instructions
     raise NotImplemented
   end
 
@@ -90,7 +84,8 @@ class GitCleanBranchesRunner
 
   def edit_branch_list
     file = Tempfile.new("cleanup-branch")
-    file.puts instructions
+    file.puts candidate_instructions
+    file.puts "# To delete the branches, delete them from this list, and then save and quit"
     file.puts(branch_candidates * "\n")
     file.close
     system("#{EDITOR} #{file.path}")
