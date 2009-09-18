@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# strip trailing whitespace from any lines you've introduced. If you've staged changes, it strips them from the index (and they stay in your working copy).
+# why would you want to do this?  Keep your patches clean.  Why not just strip all whitespaces from your project?  Well... then you'd have a big nasty commit, wouldn't you?  And some code generators might rely on the whitespace (like annotate-models).
+
 STAGED_CHANGES="$(git diff --cached)"
 if [ "$STAGED_CHANGES" != "" ]; then
   echo "Stripping trailing spaces from index"
