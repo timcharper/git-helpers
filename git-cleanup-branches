@@ -133,7 +133,7 @@ Deleting branches:
 EOF
     sorted_branches.each do |remote, branches|
       if remote.nil?
-        system(*%w[git b -D] + branches)
+        system(*%w[git branch -D] + branches)
       else
         system(*%w[git push] + [remote] + branches.map { |b| ":#{b}" })
       end
