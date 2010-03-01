@@ -5,7 +5,12 @@ if [ -z "$1" ]; then
   exit 1
 fi
 what_ref=$1
-branch=$(git symbolic-ref HEAD | sed 's|refs/heads/||')
+if [ -z "$2" ]; then
+  branch="$(git symbolic-ref HEAD | sed 's|refs/heads/||')"
+else
+  branch="$2"
+fi
+
 git reflog show $branch@{now} | while read ref rest; do
   if [ -z "$(git rev-list -1 $ref..$what_ref)" ]; then
     printf "[x] "
