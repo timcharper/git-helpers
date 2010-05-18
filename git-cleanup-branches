@@ -42,7 +42,7 @@ class GitCleanBranchesRunner
   def initialize(args, output = STDOUT, error = STDERR)
     @output, @error = output, error
     extend CandidateState::MergedOnly
-    @stable_branch = DEFAULT_STABLE_BRANCH
+    @stable_branch = %x{git config cleanup.stable || echo #{DEFAULT_STABLE_BRANCH}}.chomp
     opts = OptionParser.new
     opts.banner = "Usage: #{$0} [options]"
     opts.separator "Options:"
