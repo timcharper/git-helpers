@@ -19,7 +19,13 @@ if [ "$STAGED_CHANGES" != "" ]; then
   exit 0
 fi
 
+
+if [ "$(git diff)" == "" ]; then
+  echo "Working directory is clean"
+  exit 1
+fi
 git stash
+
 if (git stash show -p | git apply --whitespace=fix); then
   echo "Successfully stripped all new whitespaces"
   git reset 2> /dev/null 1> /dev/null
