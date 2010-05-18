@@ -169,6 +169,7 @@ submodule_helper_update () {
         (git show "$version" 2> /dev/null 1> /dev/null) || git fetch
       fi
       git checkout $version
+      submodule_helper_attach
     fi
     popd > /dev/null
   done
