@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+
+# Usage:
+# To set the mergeup path, "git config mergeup.path master,staging,next"
+# To mergeup, invoke the script from the base directory of a git repository
+
+class FailedToExecute < RuntimeError; end
+def run(cmd)
+  puts "Executing: `#{cmd}`"
+  system(cmd)
+  raise(FailedToExecute, "Failed to execute `#{cmd}`") unless $? == 0
+  true
+end
+
+
+DEFAULT_PATH=%w[master,staging,next]
+merge_path = %x{git config mergeup.path || echo #{DEFAULT_PATH}}.chomp.split(",")
+current_branch = %x{cat .git/HEAD}.strip.gsub("ref: refs/heads/", "")
+puts "current branch is #{current_branch}"
+
+unless File.directory?(".git")
+  puts "You must run this command from the root directory of a git repository"
+  exit 1
+end
+
+unless %x{git diff}.strip.empty?
+  puts "You have existing changes. Stash them and rerun."
+  exit 1
+end
+
+begin
+  run("git fetch")
+  run("git checkout #{BRANCHES.first}")
+  run("git merge origin/#{BRANCHES.first}")
+
+  BRANCHES[1..-1].zip(BRANCHES[0..-2]) do |merge_to, merge_from|
+    run("git checkout #{merge_to}")
+    run("git merge origin/#{merge_to}")
+    run("git merge #{merge_from}")
+  end
+
+  run("git push origin #{BRANCHES * ' '}")
+  run("git checkout #{current_branch}")
+rescue FailedToExecute => e
+  puts e
+  puts "Please resolve the issue and try again"
+  exit 1
+end
