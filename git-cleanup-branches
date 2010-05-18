@@ -60,6 +60,9 @@ class GitCleanBranchesRunner
     opts.on("-b", "--branch [branch]", "The stable branch (default: #{@stable_branch}). If a branch is merged into this, and -a parameter not specified, consider it for deletion.") do |b|
       @stable_branch = b
     end
+    opts.on("-f", "--fast", "Fast cleanup - Skip fetch/prune remotes") do
+      @fast = true
+    end
     opts.parse!(args)
   end
 
@@ -149,7 +152,7 @@ EOF
   end
 
   def run
-    fetch_and_prune
+    fetch_and_prune unless @fast
     preserve_branches = edit_branch_list
     delete_branches(branch_candidates - preserve_branches)
   rescue BranchNotFound => e
