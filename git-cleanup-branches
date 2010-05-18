@@ -7,6 +7,8 @@ EDITOR=ENV['EDITOR'] || 'vim'
 
 
 class GitCleanBranchesRunner
+  class BranchNotFound < RuntimeError; end
+
   module CandidateState
     module ConsiderAll
       def candidate_instructions
@@ -19,12 +21,18 @@ class GitCleanBranchesRunner
     end
 
     module MergedOnly
+      def merged_into?(source, dest)
+        merged = `git rev-list origin/#{dest}..#{source} --`.strip.empty?
+        raise BranchNotFound, "Error resolving refs.  Most likely destination branch 'origin/#{dest}' does not exist." unless $? == 0
+        merged
+      end
+
       def branch_candidates
         @branch_candidates ||= (
           candidates = []
           branches.each do |branch|
             next if %r(/(#{preserve_always * '|'})$) =~ branch
-            next unless `git rev-list origin/#{stable_branch}..#{branch}`.strip.empty?
+            next unless merged_into?(branch, stable_branch)
             candidates << branch
           end
           candidates
@@ -144,6 +152,9 @@ EOF
     fetch_and_prune
     preserve_branches = edit_branch_list
     delete_branches(branch_candidates - preserve_branches)
+  rescue BranchNotFound => e
+    puts e
+    exit 1
   end
 end
 
