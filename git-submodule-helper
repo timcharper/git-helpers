@@ -85,7 +85,7 @@ submodule_helper_stash_status () {
 submodule_helper_attach () {
   if (cat .git/HEAD | grep ref: 1> /dev/null) ; then
     echo "You're already on a branch"
-    exit 1
+    return 1
   fi
   current_rev=$(git rev-parse HEAD)
   line=$(git 'for-each-ref' | egrep -v 'HEAD$' | grep $current_rev)
@@ -93,13 +93,13 @@ submodule_helper_attach () {
     echo "no known branch is currently at ${current_rev}"
     echo "here are some suggestions: "
     git branch --contains $current_rev -a | egrep -v 'no branch|HEAD'
-    exit 1
+    return 1
   fi
   rev=$(echo $line | awk '{print $1}')
   ref=$(echo $line | awk '{print $3}')
   if ( echo $ref | egrep '^refs/heads/' > /dev/null ); then
     echo "ref: $ref" > .git/HEAD
-    exit 0
+    return 0
   fi
 
   if ( echo $ref | egrep '^refs/remotes/' > /dev/null ); then
@@ -112,7 +112,7 @@ submodule_helper_attach () {
       git branch -f "$local_ref" "$ref"
       git checkout "$local_ref"
     fi
-    exit 1
+    return 1
   fi
 }
 
@@ -261,3 +261,4 @@ case "$1" in
     submodule_helper_help
     ;;
 esac
+exit $?
