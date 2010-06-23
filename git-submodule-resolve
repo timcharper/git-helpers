@@ -1,0 +1,96 @@
+#!/usr/bin/ruby
+me = File.basename($0)
+if ARGV[0].nil?
+  puts "Usage: #{me} <path-to-submodule>"
+  exit 1
+end
+submodule = ARGV[0].gsub(/\/$/, "")
+unless File.directory?(".git")
+  STDERR.puts "This command must be run from the base of your git working directory"
+  exit 1
+end
+
+orig_head_file = %w[.git/MERGE_HEAD .git/rebase-apply/original-commit].select {|f| File.exist?(f) }.first
+
+unless File.exist?(orig_head_file)
+  STDERR.puts "Error: Not currently resolving a conflict"
+end
+
+def read_info(ref, path)
+  info, path = %x{git ls-tree "#{ref}" "#{path}"}.split(/\t/)
+  return {} if info.nil?
+  a = {}
+  a[:mode], a[:type], a[:object_id] = info.split(" ") 
+  a
+end
+
+super_left="HEAD"
+super_right=File.read(orig_head_file).chomp
+submod_left_id=read_info(super_left, submodule)[:object_id][0..6]
+submod_right_id=read_info(super_right, submodule)[:object_id][0..6]
+
+Dir.chdir(submodule) do
+  merge_base = %x(git merge-base #{submod_left_id} #{submod_right_id}).chomp
+  merge_base_parent = %x{git show #{merge_base} --pretty=%P}.split("\n").first
+
+  # puts "merge_base #{merge_base} merge_base_parent #{merge_base_parent}"
+  command = %(git log --pretty="%h - %s" --graph #{submod_left_id} #{submod_right_id}) 
+  command << " --not #{merge_base_parent}" unless merge_base_parent.empty?
+  #puts command
+  output = %x{#{command}}.
+    gsub(submod_left_id, "#{submod_left_id} (left)").
+    gsub(submod_right_id, "#{submod_right_id} (right)")
+  puts output
+end
+
+
+class CheckoutFailed < Exception
+  attr_reader :branch, :output
+  def initialize(branch, output)
+    @branch = branch
+    @output = output
+  end
+end
+
+def git_checkout(branch)
+  output = %x(git checkout #{branch} 2>&1)
+  raise CheckoutFailed.new(branch, output) unless $? == 0
+end
+
+def prompt
+  puts "Pick (l)eft, (r)ight, (b)oth, or (a)bort:"
+  STDIN.readline[0..0].downcase
+end
+
+Dir.chdir(submodule) do
+  begin
+    until case prompt
+      when /^l/
+        git_checkout(submod_left_id)
+        true
+      when /^r/
+        git_checkout(submod_right_id)
+        true
+      when /^b/
+        git_checkout(submod_left_id)
+        system("git merge #{submod_right_id}")
+        if $? == 0
+          puts "Automatic merge failed! `cd #{submodule}` and resolve the conflict. Once done, go back to the super project and issue `git add #{submodule}`"
+          exit 1
+        end
+        true
+      when /^a/
+        puts "Aborted"
+        exit 1
+      else
+        puts "invalid option."
+        false
+      end
+    end
+  rescue CheckoutFailed => e
+    puts "ERROR! Failure while checking out branch #{e.branch} in #{submodule}\n--- Output was: ---\n#{e.output}\n------------\nPerhaps you need to stash changes in your submodule? Resolve the issue and then run #{me} again"
+    exit 1
+  end
+end
+system("git add #{submodule}")
+puts "#{submodule} marked as resolved."
