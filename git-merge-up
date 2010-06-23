@@ -30,16 +30,16 @@ end
 
 begin
   run("git fetch")
-  run("git checkout #{BRANCHES.first}")
-  run("git merge origin/#{BRANCHES.first}")
+  run("git checkout #{merge_path.first}")
+  run("git merge origin/#{merge_path.first}")
 
-  BRANCHES[1..-1].zip(BRANCHES[0..-2]) do |merge_to, merge_from|
+  merge_path[1..-1].zip(merge_path[0..-2]) do |merge_to, merge_from|
     run("git checkout #{merge_to}")
     run("git merge origin/#{merge_to}")
     run("git merge #{merge_from}")
   end
 
-  run("git push origin #{BRANCHES * ' '}")
+  run("git push origin #{merge_path * ' '}")
   run("git checkout #{current_branch}")
 rescue FailedToExecute => e
   puts e
