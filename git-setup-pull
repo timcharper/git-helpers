@@ -1,0 +1,12 @@
+#!/bin/bash
+branch_name=$(sed 's|ref: refs/heads/||' .git/HEAD)
+remote_name=${1:-origin}
+remote_branch=${2:-$branch_name}
+
+if [ "$branch_name" == "$(cat .git/HEAD)" ]; then
+  echo "You're not on a branch"
+  exit 1
+fi
+
+git config branch.$branch_name.remote $remote_name
+git config branch.$branch_name.merge $remote_branch
