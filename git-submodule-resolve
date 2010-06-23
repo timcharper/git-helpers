@@ -58,7 +58,7 @@ def git_checkout(branch)
 end
 
 def prompt
-  puts "Pick (l)eft, (r)ight, (b)oth, or (a)bort:"
+  puts "\nPick (l)eft, (r)ight, or (a)bort:"
   STDIN.readline[0..0].downcase
 end
 
@@ -71,14 +71,14 @@ Dir.chdir(submodule) do
       when /^r/
         git_checkout(submod_right_id)
         true
-      when /^b/
-        git_checkout(submod_left_id)
-        system("git merge #{submod_right_id}")
-        if $? == 0
-          puts "Automatic merge failed! `cd #{submodule}` and resolve the conflict. Once done, go back to the super project and issue `git add #{submodule}`"
-          exit 1
-        end
-        true
+      # when /^b/
+      #   git_checkout(submod_left_id)
+      #   system("git merge #{submod_right_id}")
+      #   if $? == 0
+      #     puts "Automatic merge failed! `cd #{submodule}` and resolve the conflict. Once done, go back to the super project and issue `git add #{submodule}`"
+      #     exit 1
+      #   end
+      #   true
       when /^a/
         puts "Aborted"
         exit 1
