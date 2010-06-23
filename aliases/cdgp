@@ -1,0 +1,1 @@
+alias cdgp='_CDGP=$(dirname "$PWD"); while [ ! -d "$_CDGP/.git" ] && [ "$_CDGP" != "/" ]; do _CDGP=$(dirname "$_CDGP"); done; [ "$_CDGP" != "/" ] && cd "$_CDGP"'
