@@ -12,7 +12,7 @@ end
 
 orig_head_file = %w[.git/MERGE_HEAD .git/rebase-apply/original-commit].select {|f| File.exist?(f) }.first
 
-unless File.exist?(orig_head_file)
+unless orig_head_file
   STDERR.puts "Error: Not currently resolving a conflict"
 end
 
