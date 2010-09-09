@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # This is a simple script that allows you to create *.d style folders to run multiple scripts for a given hook
 # Usage (If you are wanting to install it for pre-commit):
@@ -6,8 +6,8 @@
 #   mkdir pre-commit.d
 #   mv pre-commit pre-commit.d/hook-description
 #   ln -s ~/bin/git-hookd-wrapper pre-commit
-dirname=`dirname $0`
-hooktype=`basename $0`
-for script in "${dirname}"/${hooktype}.d/*; do
-  "${script}" || exit $?
+dirname="`dirname \"$0\"`"
+hooktype="`basename \"$0\"`"
+for script in "${dirname}"/"${hooktype}.d"/*; do
+  "${script}" "@$" || exit $?
 done
