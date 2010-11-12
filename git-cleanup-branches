@@ -4,7 +4,7 @@ require "tempfile.rb"
 require 'optparse'
 
 DEFAULT_STABLE_BRANCH="master"
-EDITOR=ENV['EDITOR'] || 'vim'
+EDITOR=ENV['GIT_EDITOR'] || ENV['EDITOR'] || 'vim'
 
 
 class GitCleanBranchesRunner
