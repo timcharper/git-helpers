@@ -1,4 +1,5 @@
 #!/usr/bin/env ruby
+# USAGE: set your stable branch by "git config cleanup.stable <branch-name>"... will prompt you to delete all branches merged into origin/<branch-name>
 require "tempfile.rb"
 require 'optparse'
 
