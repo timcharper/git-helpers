@@ -10,7 +10,7 @@ unless File.directory?(".git")
   exit 1
 end
 
-orig_head_file = %w[.git/MERGE_HEAD .git/rebase-apply/original-commit].select {|f| File.exist?(f) }.first
+orig_head_file = %w[.git/MERGE_HEAD .git/rebase-apply/original-commit .git/ORIG_HEAD].select {|f| File.exist?(f) }.first
 
 unless orig_head_file
   STDERR.puts "Error: Not currently resolving a conflict"
