@@ -30,6 +30,7 @@ submod_left_id=read_info(super_left, submodule)[:object_id][0..6]
 submod_right_id=read_info(super_right, submodule)[:object_id][0..6]
 
 Dir.chdir(submodule) do
+  system("git fetch")
   merge_base = %x(git merge-base #{submod_left_id} #{submod_right_id}).chomp
   merge_base_parent = %x{git show #{merge_base} --pretty=%P}.split("\n").first
 
