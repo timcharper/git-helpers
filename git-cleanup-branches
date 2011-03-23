@@ -73,14 +73,14 @@ class GitCleanBranchesRunner
 
   def fetch_and_prune
     puts "Fetching and pruning all remotes"
-    `git remote`.each do |remote|
+    `git remote`.split("\n").each do |remote|
       system("git fetch #{remote}")
       system("git remote prune #{remote}")
     end
   end
 
   def branches
-    %x(git for-each-ref).map do |branch_name|
+    %x(git for-each-ref).split("\n").map do |branch_name|
       next unless %r{.+(refs/(heads|remotes).+$)}.match(branch_name)
       $1
     end.compact
