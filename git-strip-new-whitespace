@@ -1,12 +1,12 @@
+
 #!/bin/bash
 
 # strip trailing whitespace from any lines you've introduced. If you've staged changes, it strips them from the index (and they stay in your working copy).
 # why would you want to do this?  Keep your patches clean.  Why not just strip all whitespaces from your project?  Well... then you'd have a big nasty commit, wouldn't you?  And some code generators might rely on the whitespace (like annotate-models).
 
-if [ ! -d ".git" ]; then
-  echo "This should be run from the root of your git project"
-  exit 1
-fi
+while [ $(pwd) != "/" ] && [ ! -d ".git" ]; do
+  cd ..
+done
 
 if [ -f ".git/MERGE_MODE" ]; then
   echo "You are currently in the middle of a merge, and running this would mess you up!"
