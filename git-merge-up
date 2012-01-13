@@ -12,16 +12,21 @@ def run(cmd)
   true
 end
 
+git_directory =
+  case
+  when File.file?(".git")
+    File.read(".git").gsub("gitdir: ", "").strip
+  when File.directory?(".git")
+    ".git"
+  else
+    puts "You must run this command from the root directory of a git repository"
+    exit 1
+  end
 
 DEFAULT_PATH=%w[master,staging,next]
 merge_path = %x{git config mergeup.path || echo #{DEFAULT_PATH}}.chomp.split(",")
-current_branch = %x{cat .git/HEAD}.strip.gsub("ref: refs/heads/", "")
+current_branch = File.read("#{git_directory}/HEAD").strip.gsub("ref: refs/heads/", "")
 puts "current branch is #{current_branch}"
-
-unless File.directory?(".git")
-  puts "You must run this command from the root directory of a git repository"
-  exit 1
-end
 
 unless %x{git diff}.strip.empty?
   puts "You have existing changes. Stash them and rerun."

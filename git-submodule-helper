@@ -28,8 +28,8 @@ submodule_md5 () {
 
 submodule_stash_path () {
   local path="$1"
-  [ ! -d ".git/submodule_cache/" ] && mkdir .git/submodule_cache
-  printf ".git/submodule_cache/`submodule_md5 "$path"`"
+  [ ! -d "$GIT_DIR/submodule_cache/" ] && mkdir "$GIT_DIR/submodule_cache"
+  printf "$GIT_DIR/submodule_cache/`submodule_md5 "$path"`"
 }
 
 submodule_helper_stash () {
@@ -83,7 +83,7 @@ submodule_helper_stash_status () {
 }
 
 submodule_helper_attach () {
-  if (cat .git/HEAD | grep ref: 1> /dev/null) ; then
+  if (cat $GIT_DIR/HEAD | grep ref: 1> /dev/null) ; then
     echo "You're already on a branch"
     return 1
   fi
@@ -98,7 +98,7 @@ submodule_helper_attach () {
   rev=$(echo $line | awk '{print $1}')
   ref=$(echo $line | awk '{print $3}')
   if ( echo $ref | egrep '^refs/heads/' > /dev/null ); then
-    echo "ref: $ref" > .git/HEAD
+    echo "ref: $ref" > $GIT_DIR/HEAD
     return 0
   fi
 
@@ -137,6 +137,10 @@ submodule_helper_add_folder () {
   pushd $folder > /dev/null
     url=$(git config remote.origin.url)
   popd > /dev/null
+  if [ -z "$url" ]; then
+    echo "Repository in $folder does not have remote named origin."
+    exit 1
+  fi
   git submodule add "$url" "$folder"
 }
 
@@ -221,7 +225,12 @@ DISCLAIMER: Make sure you back things up first in case things go horribly wrong
 EOF
 }
 
-if [ ! -d ".git" ]; then
+GIT_DIR=".git"
+if [ -f "$GIT_DIR" ]; then
+  GIT_DIR=$(cat $GIT_DIR | awk '{print $2}')
+fi
+
+if [ ! -d "$GIT_DIR" ]; then
   echo "This must be run from the root directory of the git working copy"
   exit 1
 fi
