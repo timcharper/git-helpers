@@ -1,8 +1,26 @@
 #!/usr/bin/env ruby
+def usage(error = nil)
+  STDERR.puts "#{error}\n\n" if error
 
-# Usage:
-# To set the mergeup path, "git config mergeup.path master,staging,next"
-# To mergeup, invoke the script from the base directory of a git repository
+  STDERR.puts <<-EOF
+Usage: #{$0}
+
+Ensures that the remote, origin, has changes up through production and
+staging branches.
+
+To set the mergeup path:
+
+  git config mergeup.path master,next
+
+Script must be invoked from the base directory of a git repository.
+
+EOF
+end
+
+if ARGV[0] == "--help"
+  usage
+  exit 1
+end
 
 class FailedToExecute < RuntimeError; end
 def run(cmd)
@@ -19,17 +37,27 @@ git_directory =
   when File.directory?(".git")
     ".git"
   else
-    puts "You must run this command from the root directory of a git repository"
+    STDERR.puts "ERROR: You must run this command from the root directory of a git repository\n\n"
     exit 1
   end
 
-DEFAULT_PATH=%w[master,staging,next]
-merge_path = %x{git config mergeup.path || echo #{DEFAULT_PATH}}.chomp.split(",")
+merge_path = %x{git config mergeup.path}.chomp.split(",")
+
+if merge_path.empty?
+  STDERR.puts <<-EOF
+You must set config variable mergeup.path.
+IE:
+
+  git config mergeup.path master,next
+EOF
+  exit 2
+end
+
 current_branch = File.read("#{git_directory}/HEAD").strip.gsub("ref: refs/heads/", "")
 puts "current branch is #{current_branch}"
 
 unless %x{git diff}.strip.empty?
-  puts "You have existing changes. Stash them and rerun."
+  STDERR.puts "You have existing changes. Stash them and rerun."
   exit 1
 end
 
