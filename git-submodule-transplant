@@ -1,0 +1,11 @@
+#!/bin/bash
+
+if [ ! -f .git ]; then
+  echo "Must be run from root directory of git submodule with referenced git repo"
+  exit 1
+fi
+GITREPO=$(cut -f 2 -d ' ' .git)
+echo "Transplanting $GITREPO to .git"
+rm .git
+mv "$GITREPO" .git
+git config --unset core.worktree
