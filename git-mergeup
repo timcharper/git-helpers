@@ -56,7 +56,7 @@ end
 current_branch = File.read("#{git_directory}/HEAD").strip.gsub("ref: refs/heads/", "")
 puts "current branch is #{current_branch}"
 
-unless %x{git diff}.strip.empty?
+unless %x{git diff --ignore-submodules=untracked}.strip.empty?
   STDERR.puts "You have existing changes. Stash them and rerun."
   exit 1
 end
