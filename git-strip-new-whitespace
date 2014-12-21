@@ -1,4 +1,3 @@
-
 #!/bin/bash
 
 # strip trailing whitespace from any lines you've introduced. If you've staged changes, it strips them from the index (and they stay in your working copy).
