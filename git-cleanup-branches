@@ -3,9 +3,7 @@
 require "tempfile.rb"
 require 'optparse'
 
-DEFAULT_STABLE_BRANCH="master"
 EDITOR=ENV['GIT_EDITOR'] || ENV['EDITOR'] || 'vim'
-
 
 class GitCleanBranchesRunner
   class BranchNotFound < RuntimeError; end
@@ -51,7 +49,7 @@ class GitCleanBranchesRunner
   def initialize(args, output = STDOUT, error = STDERR)
     @output, @error = output, error
     extend CandidateState::MergedOnly
-    @stable_branch = %x{git config cleanup.stable || echo #{DEFAULT_STABLE_BRANCH}}.chomp
+    @stable_branch = %x{git config cleanup.stable || git symbolic-ref refs/remotes/origin/HEAD --short}.chomp
     opts = OptionParser.new
     opts.banner = "Usage: #{$0} [options]"
     opts.separator "Options:"
