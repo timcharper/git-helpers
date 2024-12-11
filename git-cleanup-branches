@@ -1,164 +1,379 @@
-#!/usr/bin/env ruby
-# USAGE: set your stable branch by "git config cleanup.stable <branch-name>"... will prompt you to delete all branches merged into origin/<branch-name>
-require "tempfile.rb"
-require 'optparse'
+#!/usr/bin/env -S deno run --allow-all
 
-EDITOR=ENV['GIT_EDITOR'] || ENV['EDITOR'] || 'vim'
+import yargs from "https://deno.land/x/yargs@v17.7.2-deno/deno.ts";
 
-class GitCleanBranchesRunner
-  class BranchNotFound < RuntimeError; end
+const DEBUG = !!Deno.env.get("DEBUG");
+const DRY_RUN = !!Deno.env.get("DRY_RUN");
 
-  module CandidateState
-    module ConsiderAll
-      def candidate_instructions
-        "# The following is a list of all local and remote branches in your repository"
-      end
+function tmpNameSync(prefix: string = "tmp"): string {
+  const uniqueId = crypto.randomUUID();
+  return `${prefix}-${uniqueId}`;
+}
 
-      def branch_candidates
-        @branch_candidates ||= branches
-      end
-    end
+function runCommandSync(command: string, args: string[]): string {
+  if (DEBUG) {
+    console.log(`+ ${command} ${args.join(" ")}`);
+  }
+  const result = new Deno.Command(command, {
+    args: args,
+  }).outputSync();
 
-    module MergedOnly
-      def merged_into?(source, dest)
-        merged = `git rev-list origin/#{dest}..#{source} --`.strip.empty?
-        raise BranchNotFound, "Error resolving refs.  Most likely destination branch 'origin/#{dest}' does not exist." unless $? == 0
-        merged
-      end
+  if (!result.success) {
+    const stdout = new TextDecoder().decode(result.stdout);
+    if (stdout) {
+      console.log(stdout);
+    }
+    throw new Error(
+      `Command failed: ${command} ${args.join(" ")} (exit code: ${result.code})`
+    );
+  }
 
-      def branch_candidates
-        @branch_candidates ||= (
-          candidates = []
-          branches.each do |branch|
-            next if %r(/(#{preserve_always * '|'})$) =~ branch
-            next unless merged_into?(branch, stable_branch)
-            candidates << branch
-          end
-          candidates
-        )
-      end
+  return new TextDecoder().decode(result.stdout);
+}
 
-      def candidate_instructions
-        "# The following branches have been merged in to refs/remotes/origin/#{stable_branch}"
-      end
-    end
-  end
+function hasRemoteBranch(
+  branch: ParsedRef,
+  sortedBranches: SortedBranches,
+  remote: string
+): boolean {
+  const remoteBranches = sortedBranches.remotes[remote] || [];
+  return remoteBranches.some(
+    (remoteBranch) => remoteBranch.branchName === branch.branchName
+  );
+}
+interface ParsedRef {
+  remote?: string;
+  ref: string;
+  branchName: string;
+  isLocal: boolean;
+}
 
-  attr_reader :stable_branch
+interface SortedBranches {
+  local: ParsedRef[];
+  remotes: Record<string, ParsedRef[]>;
+}
 
-  def initialize(args, output = STDOUT, error = STDERR)
-    @output, @error = output, error
-    extend CandidateState::MergedOnly
-    @stable_branch = %x{git config cleanup.stable || git symbolic-ref refs/remotes/origin/HEAD --short}.chomp
-    opts = OptionParser.new
-    opts.banner = "Usage: #{$0} [options]"
-    opts.separator "Options:"
-    opts.on("-a", "--all", "Consider all branches for deletion, regardless if they've been merged into stable") do
-      extend CandidateState::ConsiderAll
-    end
-    opts.on("-b", "--branch [branch]", "The stable branch (default: #{@stable_branch}). If a branch is merged into this, and -a parameter not specified, consider it for deletion.") do |b|
-      @stable_branch = b
-    end
-    opts.on("-f", "--fast", "Fast cleanup - Skip fetch/prune remotes") do
-      @fast = true
-    end
-    opts.parse!(args)
-  end
+interface CandidateState {
+  candidateInstructions(): string;
+  branchCandidates(): string[];
+}
 
-  def preserve_always
-    [stable_branch] + %w[staging master next HEAD]
-  end
+function parseRef(ref: string): ParsedRef | null {
+  const remoteMatch = ref.match(/^refs\/remotes\/([^/]+)\/(.+)$/);
+  const localMatch = ref.match(/^refs\/heads\/(.+)$/);
 
-  def fetch_and_prune
-    puts "Fetching and pruning all remotes"
-    `git remote`.split("\n").each do |remote|
-      system("git fetch #{remote}")
-      system("git remote prune #{remote}")
-    end
-  end
+  if (remoteMatch) {
+    const [, remote, branchName] = remoteMatch;
+    return {
+      remote,
+      ref,
+      branchName,
+      isLocal: false,
+    };
+  } else if (localMatch) {
+    const [, branchName] = localMatch;
+    return {
+      ref,
+      branchName,
+      isLocal: true,
+    };
+  }
+  return null;
+}
 
-  def branches
-    %x(git for-each-ref).split("\n").map do |branch_name|
-      next unless %r{.+(refs/(heads|remotes).+$)}.match(branch_name)
-      $1
-    end.compact
-  end
+function sortBranches(branches: string[]): SortedBranches {
+  const sorted: SortedBranches = {
+    local: [],
+    remotes: {},
+  };
 
-  def candidate_instructions
-    raise NotImplemented
-  end
+  for (const branch of branches) {
+    const parsed = parseRef(branch);
+    if (!parsed) {
+      console.log(`I don't know how to delete ${branch}`);
+      continue;
+    }
 
-  def branch_candidates
-    raise NotImplemented
-  end
+    if (parsed.isLocal) {
+      sorted.local.push(parsed);
+    } else if (parsed.remote) {
+      sorted.remotes[parsed.remote] = sorted.remotes[parsed.remote] || [];
+      sorted.remotes[parsed.remote].push(parsed);
+    }
+  }
 
-  def edit_branch_list
-    file = Tempfile.new("cleanup-branch")
-    file.puts candidate_instructions
-    file.puts "# To delete the branches, delete them from this list, and then save and quit"
-    file.puts(branch_candidates * "\n")
-    file.close
-    system("#{EDITOR} #{file.path}")
-    preserve_branches = File.read(file.path).split("\n").grep(/^[^#].+/)
-    file.delete
+  return sorted;
+}
 
-    unless (erroneous_branches = (preserve_branches - branch_candidates)).empty?
-      puts <<EOF
-Error! unrecognized branches:
-#{erroneous_branches.map{|b| " - #{b}"} * "\n"}
-EOF
-      exit 1
-    end
+class BranchNotFound extends Error {}
 
-    preserve_branches
-  end
+class ConsiderAll implements CandidateState {
+  private branches: string[];
 
-  def sort_branches(branches)
-    sorted_branches = {}
-    branches.each do |branch|
-      case branch
-      when %r(^refs/remotes/([^/]+)/(.+)$)
-        remote, branch = $1, $2
-        sorted_branches[remote] ||= []
-        sorted_branches[remote] << branch
-      when %r(^refs/heads/(.+)$)
-        sorted_branches[nil] ||= []
-        sorted_branches[nil] << $1
-      else
-        puts "I don't know how to delete #{branch_for_deletion}"
-      end
-    end
-    sorted_branches
-  end
+  constructor(branches: string[]) {
+    this.branches = branches;
+  }
 
-  def delete_branches(branches_for_deletion)
-    sorted_branches = sort_branches(branches_for_deletion)
-    if sorted_branches.empty?
-      puts "No branches to delete."
-      exit 1
-    end
-    puts <<EOF
-Deleting branches:
-#{branches_for_deletion.map{|b| " - #{b}"} * "\n"}
-EOF
-    sorted_branches.each do |remote, branches|
-      if remote.nil?
-        system(*%w[git branch -D] + branches)
-      else
-        system(*%w[git push] + [remote] + branches.map { |b| ":#{b}" })
-      end
-    end
-  end
+  candidateInstructions(): string {
+    return "# The following is a list of all local and remote branches in your repository";
+  }
 
-  def run
-    fetch_and_prune unless @fast
-    preserve_branches = edit_branch_list
-    delete_branches(branch_candidates - preserve_branches)
-  rescue BranchNotFound => e
-    puts e
-    exit 1
-  end
-end
+  branchCandidates(): string[] {
+    return this.branches;
+  }
+}
 
+class MergedOnly implements CandidateState {
+  private branches: string[];
+  private stableBranch: string;
+  private preserveAlways: string[];
 
-GitCleanBranchesRunner.new(ARGV).run
+  constructor(
+    branches: string[],
+    stableBranch: string,
+    preserveAlways: string[]
+  ) {
+    this.branches = branches;
+    this.stableBranch = stableBranch;
+    this.preserveAlways = preserveAlways;
+  }
+
+  private mergedInto(source: string, dest: string): boolean {
+    try {
+      runCommandSync("git", ["rev-list", `origin/${dest}..${source}`, "--"]);
+      return true;
+    } catch (e) {
+      console.error(e);
+      throw new BranchNotFound(
+        `Error resolving refs. Most likely destination branch 'origin/${dest}' does not exist.`
+      );
+    }
+  }
+
+  candidateInstructions(): string {
+    return `# The following branches have been merged in to refs/remotes/origin/${this.stableBranch}`;
+  }
+
+  branchCandidates(): string[] {
+    const candidates: string[] = [];
+    for (const branch of this.branches) {
+      if (new RegExp(`/(${this.preserveAlways.join("|")})$`).test(branch)) {
+        continue;
+      }
+      if (!this.mergedInto(branch, this.stableBranch)) {
+        continue;
+      }
+      candidates.push(branch);
+    }
+    return candidates;
+  }
+}
+
+class GitCleanBranchesRunner {
+  private stableBranch: string;
+  private fast: boolean = false;
+  private state: CandidateState;
+
+  constructor(args: string[] = []) {
+    try {
+      this.stableBranch = runCommandSync("git", [
+        "config",
+        "cleanup.stable",
+      ]).trim();
+    } catch {
+      this.stableBranch = runCommandSync("git", [
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "--short",
+      ])
+        .trim()
+        .replace(/^origin\//, "");
+    }
+
+    const argv = yargs(args)
+      .usage(`Usage: ${Deno.args[0]} [options]`)
+      .option("a", {
+        alias: "all",
+        type: "boolean",
+        description:
+          "Consider all branches for deletion, regardless if they've been merged into stable",
+        default: false,
+      })
+      .option("b", {
+        alias: "branch",
+        type: "string",
+        description: `The stable branch (default: ${this.stableBranch}). If a branch is merged into this, and -a parameter not specified, consider it for deletion.`,
+        default: this.stableBranch,
+      })
+      .option("f", {
+        alias: "fast",
+        type: "boolean",
+        description: "Fast cleanup - Skip fetch/prune remotes",
+        default: false,
+      })
+      .parseSync();
+
+    this.stableBranch = argv.branch;
+    this.fast = argv.fast;
+
+    const branches = this.branches();
+    this.state = argv.all
+      ? new ConsiderAll(branches)
+      : new MergedOnly(branches, this.stableBranch, this.preserveAlways());
+  }
+
+  private preserveAlways(): string[] {
+    return [this.stableBranch, "staging", "master", "next", "HEAD"];
+  }
+
+  private fetchAndPrune(): void {
+    console.log("Fetching and pruning all remotes");
+    const remotes = runCommandSync("git", ["remote"])
+      .split("\n")
+      .filter(Boolean);
+
+    for (const remote of remotes) {
+      try {
+        runCommandSync("git", ["fetch", remote]);
+      } catch (e) {
+        console.error(e);
+        console.error(`Failed to fetch remote: ${remote}`);
+        continue;
+      }
+      try {
+        runCommandSync("git", ["remote", "prune", remote]);
+      } catch (e) {
+        console.error(e);
+        console.error(`Failed to prune remote: ${remote}`);
+      }
+    }
+  }
+
+  private branches(): string[] {
+    const output = runCommandSync("git", ["for-each-ref"]);
+    return output
+      .split("\n")
+      .map((line) => {
+        const match = line.match(/.+(refs\/(heads|remotes).+$)/);
+        return match ? match[1] : null;
+      })
+      .filter((branch): branch is string => branch !== null);
+  }
+
+  private editBranchList(): string[] {
+    const tempFile = tmpNameSync();
+    const lines = [
+      this.state.candidateInstructions(),
+      "# To delete the branches, delete them from this list, and then save and quit",
+    ];
+    const sortedBranches = sortBranches(this.state.branchCandidates());
+
+    const joined: [string, ParsedRef[]][] = [
+      ["local branches", sortedBranches.local],
+      ...Object.entries(sortedBranches.remotes),
+    ];
+
+    for (const [type, branches] of joined) {
+      lines.push("");
+      lines.push(`# ${type.toUpperCase()}:`);
+      for (const branch of branches) {
+        const suffix =
+          branch.isLocal && !hasRemoteBranch(branch, sortedBranches, "origin")
+            ? " # (no remote)"
+            : "";
+        lines.push(`${branch.ref}${suffix}`);
+      }
+    }
+    Deno.writeTextFileSync(tempFile, lines.join("\n"));
+
+    new Deno.Command(Deno.env.get("EDITOR") || "vi", {
+      args: [tempFile],
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    }).outputSync();
+
+    const preserveBranches = Deno.readTextFileSync(tempFile)
+      .split("\n")
+      .map((line) => line.replace(/#.+$/, "").trim())
+      .filter((line) => line.length > 0);
+
+    Deno.removeSync(tempFile);
+
+    const erroneousBranches = preserveBranches.filter(
+      (b) => !this.state.branchCandidates().includes(b)
+    );
+    if (erroneousBranches.length > 0) {
+      console.error(
+        "Error! unrecognized branches:\n" +
+          erroneousBranches.map((b) => ` - ${b}`).join("\n")
+      );
+      Deno.exit(1);
+    }
+
+    return preserveBranches;
+  }
+
+  private deleteBranches(branchesForDeletion: string[]): void {
+    if (branchesForDeletion.length === 0) {
+      console.log("No branches to delete.");
+      Deno.exit(1);
+    }
+
+    console.log(
+      "Deleting branches:\n" +
+        branchesForDeletion.map((b) => ` - ${b}`).join("\n")
+    );
+
+    // are you sure?
+    const confirmation = prompt(
+      "Are you sure you want to delete these branches? [y/N] "
+    );
+    if (!confirmation || !["y", "Y"].includes(confirmation)) {
+      console.log("Aborting.");
+      Deno.exit(0);
+    }
+
+    const sortedBranches = sortBranches(branchesForDeletion);
+    if (sortedBranches.local.length > 0) {
+      const args = ["branch", "-D", ...sortedBranches.local.map((b) => b.ref)];
+
+      if (DRY_RUN) {
+        console.log(`Would run: git ${args.join(" ")}`);
+      } else {
+        runCommandSync("git", args);
+      }
+    }
+    for (const [remote, branches] of Object.entries(sortedBranches.remotes)) {
+      const args = ["push", remote, ...branches.map((b) => `:${b.ref}`)];
+      if (DRY_RUN) {
+        console.log(`Would run: git ${args.join(" ")}`);
+      } else {
+        runCommandSync("git", args);
+      }
+    }
+  }
+
+  run(): void {
+    try {
+      if (!this.fast) {
+        this.fetchAndPrune();
+      }
+      const preserveBranches = this.editBranchList();
+      this.deleteBranches(
+        this.state
+          .branchCandidates()
+          .filter((b) => !preserveBranches.includes(b))
+      );
+    } catch (e) {
+      if (e instanceof BranchNotFound) {
+        console.error(e.message);
+        Deno.exit(1);
+      }
+      console.error(e);
+      throw e;
+    }
+  }
+}
+
+new GitCleanBranchesRunner(Deno.args).run();
