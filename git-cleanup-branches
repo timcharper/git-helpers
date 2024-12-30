@@ -123,52 +123,6 @@ class ConsiderAll implements CandidateState {
   }
 }
 
-class MergedOnly implements CandidateState {
-  private branches: string[];
-  private stableBranch: string;
-  private preserveAlways: string[];
-
-  constructor(
-    branches: string[],
-    stableBranch: string,
-    preserveAlways: string[]
-  ) {
-    this.branches = branches;
-    this.stableBranch = stableBranch;
-    this.preserveAlways = preserveAlways;
-  }
-
-  private mergedInto(source: string, dest: string): boolean {
-    try {
-      runCommandSync("git", ["rev-list", `origin/${dest}..${source}`, "--"]);
-      return true;
-    } catch (e) {
-      console.error(e);
-      throw new BranchNotFound(
-        `Error resolving refs. Most likely destination branch 'origin/${dest}' does not exist.`
-      );
-    }
-  }
-
-  candidateInstructions(): string {
-    return `# The following branches have been merged in to refs/remotes/origin/${this.stableBranch}`;
-  }
-
-  branchCandidates(): string[] {
-    const candidates: string[] = [];
-    for (const branch of this.branches) {
-      if (new RegExp(`/(${this.preserveAlways.join("|")})$`).test(branch)) {
-        continue;
-      }
-      if (!this.mergedInto(branch, this.stableBranch)) {
-        continue;
-      }
-      candidates.push(branch);
-    }
-    return candidates;
-  }
-}
-
 class GitCleanBranchesRunner {
   private stableBranch: string;
   private fast: boolean = false;
@@ -192,13 +146,6 @@ class GitCleanBranchesRunner {
 
     const argv = yargs(args)
       .usage(`Usage: ${Deno.args[0]} [options]`)
-      .option("a", {
-        alias: "all",
-        type: "boolean",
-        description:
-          "Consider all branches for deletion, regardless if they've been merged into stable",
-        default: false,
-      })
       .option("b", {
         alias: "branch",
         type: "string",
@@ -217,9 +164,7 @@ class GitCleanBranchesRunner {
     this.fast = argv.fast;
 
     const branches = this.branches();
-    this.state = argv.all
-      ? new ConsiderAll(branches)
-      : new MergedOnly(branches, this.stableBranch, this.preserveAlways());
+    this.state = new ConsiderAll(branches);
   }
 
   private preserveAlways(): string[] {
@@ -336,7 +281,11 @@ class GitCleanBranchesRunner {
 
     const sortedBranches = sortBranches(branchesForDeletion);
     if (sortedBranches.local.length > 0) {
-      const args = ["branch", "-D", ...sortedBranches.local.map((b) => b.ref)];
+      const args = [
+        "branch",
+        "-D",
+        ...sortedBranches.local.map((b) => b.branchName),
+      ];
 
       if (DRY_RUN) {
         console.log(`Would run: git ${args.join(" ")}`);
@@ -345,7 +294,7 @@ class GitCleanBranchesRunner {
       }
     }
     for (const [remote, branches] of Object.entries(sortedBranches.remotes)) {
-      const args = ["push", remote, ...branches.map((b) => `:${b.ref}`)];
+      const args = ["push", remote, ...branches.map((b) => `:${b.branchName}`)];
       if (DRY_RUN) {
         console.log(`Would run: git ${args.join(" ")}`);
       } else {
