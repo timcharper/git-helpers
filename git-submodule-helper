@@ -1,7 +1,7 @@
 #!/bin/bash
 
-if [ "`which md5`" == "" ]; then
-  if [ "`which md5sum`" == "" ]; then
+if [ "`which md5 2> /dev/null`" == "" ]; then
+  if [ "`which md5sum 2> /dev/null`" == "" ]; then
     echo "Couldn't find md5 or md5sum.  Aborting"
     exit 1
   fi
