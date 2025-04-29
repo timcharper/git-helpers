@@ -123,206 +123,157 @@ class ConsiderAll implements CandidateState {
   }
 }
 
-class GitCleanBranchesRunner {
-  private stableBranch: string;
-  private fast: boolean = false;
-  private state: CandidateState;
+function editBranchList(state: CandidateState): string[] {
+  const tempFile = tmpNameSync();
+  const lines = [
+    state.candidateInstructions(),
+    "# To delete the branches, delete them from this list, and then save and quit",
+  ];
+  const sortedBranches = sortBranches(state.branchCandidates());
 
-  constructor(args: string[] = []) {
-    try {
-      this.stableBranch = runCommandSync("git", [
-        "config",
-        "cleanup.stable",
-      ]).trim();
-    } catch {
-      this.stableBranch = runCommandSync("git", [
-        "symbolic-ref",
-        "refs/remotes/origin/HEAD",
-        "--short",
-      ])
-        .trim()
-        .replace(/^origin\//, "");
-    }
+  const joined: [string, ParsedRef[]][] = [
+    ["local branches", sortedBranches.local],
+    ...Object.entries(sortedBranches.remotes),
+  ];
 
-    const argv = yargs(args)
-      .usage(`Usage: ${Deno.args[0]} [options]`)
-      .option("b", {
-        alias: "branch",
-        type: "string",
-        description: `The stable branch (default: ${this.stableBranch}). If a branch is merged into this, and -a parameter not specified, consider it for deletion.`,
-        default: this.stableBranch,
-      })
-      .option("f", {
-        alias: "fast",
-        type: "boolean",
-        description: "Fast cleanup - Skip fetch/prune remotes",
-        default: false,
-      })
-      .parseSync();
-
-    this.stableBranch = argv.branch;
-    this.fast = argv.fast;
-
-    const branches = this.branches();
-    this.state = new ConsiderAll(branches);
-  }
-
-  private preserveAlways(): string[] {
-    return [this.stableBranch, "staging", "master", "next", "HEAD"];
-  }
-
-  private fetchAndPrune(): void {
-    console.log("Fetching and pruning all remotes");
-    const remotes = runCommandSync("git", ["remote"])
-      .split("\n")
-      .filter(Boolean);
-
-    for (const remote of remotes) {
-      try {
-        runCommandSync("git", ["fetch", remote]);
-      } catch (e) {
-        console.error(e);
-        console.error(`Failed to fetch remote: ${remote}`);
-        continue;
-      }
-      try {
-        runCommandSync("git", ["remote", "prune", remote]);
-      } catch (e) {
-        console.error(e);
-        console.error(`Failed to prune remote: ${remote}`);
-      }
+  for (const [type, branches] of joined) {
+    lines.push("");
+    lines.push(`# ${type.toUpperCase()}:`);
+    for (const branch of branches) {
+      const suffix =
+        branch.isLocal && !hasRemoteBranch(branch, sortedBranches, "origin")
+          ? " # (no remote)"
+          : "";
+      lines.push(`${branch.ref}${suffix}`);
     }
   }
+  Deno.writeTextFileSync(tempFile, lines.join("\n"));
 
-  private branches(): string[] {
-    const output = runCommandSync("git", ["for-each-ref"]);
-    return output
-      .split("\n")
-      .map((line) => {
-        const match = line.match(/.+(refs\/(heads|remotes).+$)/);
-        return match ? match[1] : null;
-      })
-      .filter((branch): branch is string => branch !== null);
-  }
+  new Deno.Command(Deno.env.get("EDITOR") || "vi", {
+    args: [tempFile],
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).outputSync();
 
-  private editBranchList(): string[] {
-    const tempFile = tmpNameSync();
-    const lines = [
-      this.state.candidateInstructions(),
-      "# To delete the branches, delete them from this list, and then save and quit",
-    ];
-    const sortedBranches = sortBranches(this.state.branchCandidates());
+  const preserveBranches = Deno.readTextFileSync(tempFile)
+    .split("\n")
+    .map((line) => line.replace(/#.+$/, "").trim())
+    .filter((line) => line.length > 0);
 
-    const joined: [string, ParsedRef[]][] = [
-      ["local branches", sortedBranches.local],
-      ...Object.entries(sortedBranches.remotes),
-    ];
+  Deno.removeSync(tempFile);
 
-    for (const [type, branches] of joined) {
-      lines.push("");
-      lines.push(`# ${type.toUpperCase()}:`);
-      for (const branch of branches) {
-        const suffix =
-          branch.isLocal && !hasRemoteBranch(branch, sortedBranches, "origin")
-            ? " # (no remote)"
-            : "";
-        lines.push(`${branch.ref}${suffix}`);
-      }
-    }
-    Deno.writeTextFileSync(tempFile, lines.join("\n"));
-
-    new Deno.Command(Deno.env.get("EDITOR") || "vi", {
-      args: [tempFile],
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-    }).outputSync();
-
-    const preserveBranches = Deno.readTextFileSync(tempFile)
-      .split("\n")
-      .map((line) => line.replace(/#.+$/, "").trim())
-      .filter((line) => line.length > 0);
-
-    Deno.removeSync(tempFile);
-
-    const erroneousBranches = preserveBranches.filter(
-      (b) => !this.state.branchCandidates().includes(b)
+  const erroneousBranches = preserveBranches.filter(
+    (b) => !state.branchCandidates().includes(b)
+  );
+  if (erroneousBranches.length > 0) {
+    console.error(
+      "Error! unrecognized branches:\n" +
+        erroneousBranches.map((b) => ` - ${b}`).join("\n")
     );
-    if (erroneousBranches.length > 0) {
-      console.error(
-        "Error! unrecognized branches:\n" +
-          erroneousBranches.map((b) => ` - ${b}`).join("\n")
-      );
-      Deno.exit(1);
-    }
-
-    return preserveBranches;
+    Deno.exit(1);
   }
 
-  private deleteBranches(branchesForDeletion: string[]): void {
-    if (branchesForDeletion.length === 0) {
-      console.log("No branches to delete.");
-      Deno.exit(1);
-    }
+  return preserveBranches;
+}
 
-    console.log(
-      "Deleting branches:\n" +
-        branchesForDeletion.map((b) => ` - ${b}`).join("\n")
-    );
+function deleteBranches(branchesForDeletion: string[]): void {
+  if (branchesForDeletion.length === 0) {
+    console.log("No branches to delete.");
+    Deno.exit(1);
+  }
 
-    // are you sure?
-    const confirmation = prompt(
+  console.log(
+    "Deleting branches:\n" +
+      branchesForDeletion.map((b) => ` - ${b}`).join("\n")
+  );
+
+  // are you sure?
+  let confirmation: string | undefined = undefined;
+  while (confirmation === undefined || !["y", "n"].includes(confirmation)) {
+    confirmation = prompt(
       "Are you sure you want to delete these branches? [y/N] "
-    );
-    if (!confirmation || !["y", "Y"].includes(confirmation)) {
-      console.log("Aborting.");
-      Deno.exit(0);
-    }
-
-    const sortedBranches = sortBranches(branchesForDeletion);
-    if (sortedBranches.local.length > 0) {
-      const args = [
-        "branch",
-        "-D",
-        ...sortedBranches.local.map((b) => b.branchName),
-      ];
-
-      if (DRY_RUN) {
-        console.log(`Would run: git ${args.join(" ")}`);
-      } else {
-        runCommandSync("git", args);
-      }
-    }
-    for (const [remote, branches] of Object.entries(sortedBranches.remotes)) {
-      const args = ["push", remote, ...branches.map((b) => `:${b.branchName}`)];
-      if (DRY_RUN) {
-        console.log(`Would run: git ${args.join(" ")}`);
-      } else {
-        runCommandSync("git", args);
-      }
-    }
+    )?.toLocaleLowerCase();
   }
 
-  run(): void {
-    try {
-      if (!this.fast) {
-        this.fetchAndPrune();
-      }
-      const preserveBranches = this.editBranchList();
-      this.deleteBranches(
-        this.state
-          .branchCandidates()
-          .filter((b) => !preserveBranches.includes(b))
-      );
-    } catch (e) {
-      if (e instanceof BranchNotFound) {
-        console.error(e.message);
-        Deno.exit(1);
-      }
-      console.error(e);
-      throw e;
+  if (confirmation === "n") {
+    console.log("Aborting.");
+    Deno.exit(0);
+  }
+
+  const sortedBranches = sortBranches(branchesForDeletion);
+  if (sortedBranches.local.length > 0) {
+    const args = [
+      "branch",
+      "-D",
+      ...sortedBranches.local.map((b) => b.branchName),
+    ];
+
+    if (DRY_RUN) {
+      console.log(`Would run: git ${args.join(" ")}`);
+    } else {
+      runCommandSync("git", args);
+    }
+  }
+  for (const [remote, branches] of Object.entries(sortedBranches.remotes)) {
+    const args = ["push", remote, ...branches.map((b) => `:${b.branchName}`)];
+    if (DRY_RUN) {
+      console.log(`Would run: git ${args.join(" ")}`);
+    } else {
+      runCommandSync("git", args);
     }
   }
 }
 
-new GitCleanBranchesRunner(Deno.args).run();
+function fetchAndPrune(): void {
+  console.log("Fetching and pruning all remotes");
+  runCommandSync("git", ["fetch", "--all", "--prune"]);
+  console.log("Done");
+}
+
+function getBranches(): string[] {
+  const output = runCommandSync("git", ["for-each-ref"]);
+  return output
+    .split("\n")
+    .map((line) => {
+      const match = line.match(/.+(refs\/(heads|remotes).+$)/);
+      return match ? match[1] : null;
+    })
+    .filter((branch): branch is string => branch !== null);
+}
+
+function main(args: string[]) {
+  const argv = yargs(args)
+    .usage(`Usage: ${Deno.args[0]} [options]`)
+    .option("f", {
+      alias: "fast",
+      type: "boolean",
+      description: "Fast cleanup - Skip fetch/prune remotes",
+      default: false,
+    })
+    .parseSync();
+  const fast = argv.fast;
+
+  if (!fast) {
+    fetchAndPrune();
+  }
+
+  const branches = getBranches();
+  const state = new ConsiderAll(branches);
+
+  try {
+    const preserveBranches = editBranchList(state);
+    deleteBranches(
+      state.branchCandidates().filter((b) => !preserveBranches.includes(b))
+    );
+  } catch (e) {
+    if (e instanceof BranchNotFound) {
+      console.error(e.message);
+      Deno.exit(1);
+    }
+    console.error(e);
+    throw e;
+  }
+}
+
+main(Deno.args);
