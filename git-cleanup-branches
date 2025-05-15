@@ -31,34 +31,36 @@ function runCommandSync(command: string, args: string[]): string {
   return new TextDecoder().decode(result.stdout);
 }
 
-function hasRemoteBranch(
-  branch: ParsedRef,
-  sortedBranches: SortedBranches,
-  remote: string
-): boolean {
-  const remoteBranches = sortedBranches.remotes[remote] || [];
-  return remoteBranches.some(
-    (remoteBranch) => remoteBranch.branchName === branch.branchName
-  );
-}
 interface ParsedRef {
   remote?: string;
   ref: string;
   branchName: string;
   isLocal: boolean;
+  lastCommitDate: Date;
 }
 
-interface SortedBranches {
+interface BranchesByOrigin {
   local: ParsedRef[];
   remotes: Record<string, ParsedRef[]>;
 }
 
-interface CandidateState {
-  candidateInstructions(): string;
-  branchCandidates(): string[];
+type BranchGroup = {
+  name: string | undefined;
+  branches: ParsedRef[];
+};
+
+type BranchGrouping = BranchGroup[];
+
+interface SubgroupingStrategy {
+  groupBranches(branches: ParsedRef[]): BranchGrouping;
 }
 
-function parseRef(ref: string): ParsedRef | null {
+interface CandidateState {
+  candidateInstructions(): string;
+  branchCandidates(): ParsedRef[];
+}
+
+function parseRef(ref: string, lastCommitDate: Date): ParsedRef | null {
   const remoteMatch = ref.match(/^refs\/remotes\/([^/]+)\/(.+)$/);
   const localMatch = ref.match(/^refs\/heads\/(.+)$/);
 
@@ -69,6 +71,7 @@ function parseRef(ref: string): ParsedRef | null {
       ref,
       branchName,
       isLocal: false,
+      lastCommitDate,
     };
   } else if (localMatch) {
     const [, branchName] = localMatch;
@@ -76,41 +79,42 @@ function parseRef(ref: string): ParsedRef | null {
       ref,
       branchName,
       isLocal: true,
+      lastCommitDate,
     };
   }
   return null;
 }
 
-function sortBranches(branches: string[]): SortedBranches {
-  const sorted: SortedBranches = {
+function groupByOrigin(branches: ParsedRef[]): BranchesByOrigin {
+  const grouped: BranchesByOrigin = {
     local: [],
     remotes: {},
   };
 
   for (const branch of branches) {
-    const parsed = parseRef(branch);
+    const parsed = parseRef(branch.ref, branch.lastCommitDate);
     if (!parsed) {
-      console.log(`I don't know how to delete ${branch}`);
+      console.log(`I don't know how to delete ${branch.ref}`);
       continue;
     }
 
     if (parsed.isLocal) {
-      sorted.local.push(parsed);
+      grouped.local.push(parsed);
     } else if (parsed.remote) {
-      sorted.remotes[parsed.remote] = sorted.remotes[parsed.remote] || [];
-      sorted.remotes[parsed.remote].push(parsed);
+      grouped.remotes[parsed.remote] = grouped.remotes[parsed.remote] || [];
+      grouped.remotes[parsed.remote].push(parsed);
     }
   }
 
-  return sorted;
+  return grouped;
 }
 
 class BranchNotFound extends Error {}
 
 class ConsiderAll implements CandidateState {
-  private branches: string[];
+  private branches: ParsedRef[];
 
-  constructor(branches: string[]) {
+  constructor(branches: ParsedRef[]) {
     this.branches = branches;
   }
 
@@ -118,35 +122,43 @@ class ConsiderAll implements CandidateState {
     return "# The following is a list of all local and remote branches in your repository";
   }
 
-  branchCandidates(): string[] {
+  branchCandidates(): ParsedRef[] {
     return this.branches;
   }
 }
 
-function editBranchList(state: CandidateState): string[] {
+function groupByOriginAlphabetically(branches: ParsedRef[]): BranchGroupNode[] {
+  const byOrigin: Record<string, ParsedRef[]> = {};
+  for (const branch of branches) {
+    const origin = branch.isLocal
+      ? "LOCAL BRANCHES"
+      : branch.remote?.toUpperCase() ?? "UNKNOWN REMOTE";
+    if (!byOrigin[origin]) byOrigin[origin] = [];
+    byOrigin[origin].push(branch);
+  }
+  return Object.entries(byOrigin).map(([origin, group]) => ({
+    name: origin,
+    branches: group.sort((a, b) => a.branchName.localeCompare(b.branchName)),
+  }));
+}
+
+function editBranchList(
+  state: CandidateState,
+  useStaleGrouping: boolean
+): string[] {
   const tempFile = tmpNameSync();
   const lines = [
     state.candidateInstructions(),
     "# To delete the branches, delete them from this list, and then save and quit",
   ];
-  const sortedBranches = sortBranches(state.branchCandidates());
 
-  const joined: [string, ParsedRef[]][] = [
-    ["local branches", sortedBranches.local],
-    ...Object.entries(sortedBranches.remotes),
-  ];
+  const branches = state.branchCandidates();
+  const groups: BranchGroupNode[] = useStaleGrouping
+    ? groupByRemoteThenStale(branches)
+    : groupByOriginAlphabetically(branches);
 
-  for (const [type, branches] of joined) {
-    lines.push("");
-    lines.push(`# ${type.toUpperCase()}:`);
-    for (const branch of branches) {
-      const suffix =
-        branch.isLocal && !hasRemoteBranch(branch, sortedBranches, "origin")
-          ? " # (no remote)"
-          : "";
-      lines.push(`${branch.ref}${suffix}`);
-    }
-  }
+  lines.push(...formatBranchGroups(groups));
+
   Deno.writeTextFileSync(tempFile, lines.join("\n"));
 
   new Deno.Command(Deno.env.get("EDITOR") || "vi", {
@@ -158,13 +170,15 @@ function editBranchList(state: CandidateState): string[] {
 
   const preserveBranches = Deno.readTextFileSync(tempFile)
     .split("\n")
-    .map((line) => line.replace(/#.+$/, "").trim())
+    .map((line) => line.replace(/#.+$/, "").replace(/\0/g, "").trim())
     .filter((line) => line.length > 0);
 
   Deno.removeSync(tempFile);
 
+  // Now, preserveBranches contains ref strings. We need to map these back to ParsedRef objects.
+  const allCandidates = state.branchCandidates();
   const erroneousBranches = preserveBranches.filter(
-    (b) => !state.branchCandidates().includes(b)
+    (b) => !allCandidates.some((c) => c.ref === b)
   );
   if (erroneousBranches.length > 0) {
     console.error(
@@ -174,6 +188,7 @@ function editBranchList(state: CandidateState): string[] {
     Deno.exit(1);
   }
 
+  // Return the list of ref strings to preserve (for deletion logic)
   return preserveBranches;
 }
 
@@ -201,12 +216,20 @@ function deleteBranches(branchesForDeletion: string[]): void {
     Deno.exit(0);
   }
 
-  const sortedBranches = sortBranches(branchesForDeletion);
-  if (sortedBranches.local.length > 0) {
+  const groupedBranches = groupByOrigin(
+    branchesForDeletion.map((ref) => ({
+      ref,
+      branchName: ref.split("/").pop() || "",
+      isLocal: ref.startsWith("refs/heads/"),
+      remote: ref.startsWith("refs/remotes/") ? ref.split("/")[2] : undefined,
+      lastCommitDate: new Date(),
+    }))
+  );
+  if (groupedBranches.local.length > 0) {
     const args = [
       "branch",
       "-D",
-      ...sortedBranches.local.map((b) => b.branchName),
+      ...groupedBranches.local.map((b) => b.branchName),
     ];
 
     if (DRY_RUN) {
@@ -215,7 +238,7 @@ function deleteBranches(branchesForDeletion: string[]): void {
       runCommandSync("git", args);
     }
   }
-  for (const [remote, branches] of Object.entries(sortedBranches.remotes)) {
+  for (const [remote, branches] of Object.entries(groupedBranches.remotes)) {
     const args = ["push", remote, ...branches.map((b) => `:${b.branchName}`)];
     if (DRY_RUN) {
       console.log(`Would run: git ${args.join(" ")}`);
@@ -231,28 +254,86 @@ function fetchAndPrune(): void {
   console.log("Done");
 }
 
-function getBranches(): string[] {
-  const output = runCommandSync("git", ["for-each-ref"]);
+const GitRefParser = {
+  parseGitRefLine(line: string): ParsedRef | null {
+    // Split on first null character
+    const nullIdx = line.indexOf("\0");
+    if (nullIdx === -1) return null;
+    const ref = line.slice(0, nullIdx).replace(/\0/g, "").trim();
+    const dateStr = line
+      .slice(nullIdx + 1)
+      .replace(/\0/g, "")
+      .trim();
+    if (!ref || !dateStr) return null;
+
+    const lastCommitDate = GitRefParser.parseGitDate(dateStr);
+    if (!lastCommitDate) return null;
+
+    const refInfo = GitRefParser.parseRefString(ref);
+    if (!refInfo) return null;
+
+    return { ...refInfo, ref, lastCommitDate };
+  },
+
+  parseGitDate(dateStr: string): Date | null {
+    const date = new Date(dateStr);
+    return isNaN(date.getTime()) ? null : date;
+  },
+
+  parseRefString(
+    ref: string
+  ): { remote?: string; branchName: string; isLocal: boolean } | null {
+    const remoteMatch = ref.match(/^refs\/remotes\/([^/]+)\/(.+)$/);
+    const localMatch = ref.match(/^refs\/heads\/(.+)$/);
+    if (remoteMatch) {
+      const [, remote, branchName] = remoteMatch;
+      return { remote, branchName, isLocal: false };
+    } else if (localMatch) {
+      const [, branchName] = localMatch;
+      return { branchName, isLocal: true };
+    }
+    return null;
+  },
+};
+
+function getBranches(): ParsedRef[] {
+  const output = runCommandSync("git", [
+    "for-each-ref",
+    "--format=%(refname)%00%(committerdate:iso8601)",
+    "refs/heads/",
+    "refs/remotes/",
+  ]);
+  if (DEBUG) {
+    console.log("Raw git for-each-ref output:");
+    console.log(output);
+  }
   return output
     .split("\n")
-    .map((line) => {
-      const match = line.match(/.+(refs\/(heads|remotes).+$)/);
-      return match ? match[1] : null;
-    })
-    .filter((branch): branch is string => branch !== null);
+    .filter((line) => line.trim().length > 0)
+    .map(GitRefParser.parseGitRefLine)
+    .filter((ref): ref is ParsedRef => ref !== null);
 }
 
 function main(args: string[]) {
   const argv = yargs(args)
-    .usage(`Usage: ${Deno.args[0]} [options]`)
+    .scriptName("git-cleanup-branches")
+    .usage("Usage: $0 [options]")
     .option("f", {
       alias: "fast",
       type: "boolean",
       description: "Fast cleanup - Skip fetch/prune remotes",
       default: false,
     })
+    .option("s", {
+      alias: "stale",
+      type: "boolean",
+      description: "Group branches by staleness",
+      default: false,
+    })
+    .strict()
     .parseSync();
   const fast = argv.fast;
+  const stale = argv.stale;
 
   if (!fast) {
     fetchAndPrune();
@@ -262,10 +343,12 @@ function main(args: string[]) {
   const state = new ConsiderAll(branches);
 
   try {
-    const preserveBranches = editBranchList(state);
-    deleteBranches(
-      state.branchCandidates().filter((b) => !preserveBranches.includes(b))
-    );
+    const preserveBranches = editBranchList(state, stale);
+    const branchesToDelete = state
+      .branchCandidates()
+      .filter((b) => !preserveBranches.includes(b.ref))
+      .map((b) => b.ref);
+    deleteBranches(branchesToDelete);
   } catch (e) {
     if (e instanceof BranchNotFound) {
       console.error(e.message);
@@ -276,4 +359,114 @@ function main(args: string[]) {
   }
 }
 
-main(Deno.args);
+// --- Deno tests for parser ---
+if (import.meta.main) {
+  main(Deno.args);
+} else {
+  // Only run tests if not main script
+  Deno.test("parseGitRefLine parses valid line", () => {
+    const line = "refs/heads/feature/foo\x002023-01-01 12:00:00 +0000";
+    const parsed = GitRefParser.parseGitRefLine(line);
+    if (!parsed) throw new Error("Should parse");
+    if (parsed.branchName !== "feature/foo")
+      throw new Error("Wrong branch name");
+    if (!parsed.isLocal) throw new Error("Should be local");
+    if (parsed.lastCommitDate.toISOString() !== "2023-01-01T12:00:00.000Z")
+      throw new Error("Wrong date");
+  });
+
+  Deno.test("parseGitRefLine returns null for invalid line", () => {
+    const line = "notaref\x00notadate";
+    const parsed = GitRefParser.parseGitRefLine(line);
+    if (parsed !== null) throw new Error("Should not parse");
+  });
+
+  Deno.test("parseRefString parses remote ref", () => {
+    const ref = "refs/remotes/origin/feature/bar";
+    const info = GitRefParser.parseRefString(ref);
+    if (!info) throw new Error("Should parse");
+    if (info.remote !== "origin") throw new Error("Wrong remote");
+    if (info.branchName !== "feature/bar") throw new Error("Wrong branch name");
+    if (info.isLocal) throw new Error("Should not be local");
+  });
+}
+
+interface BranchGroupNode {
+  name?: string;
+  children?: BranchGroupNode[];
+  branches?: ParsedRef[];
+}
+
+// Example: group by remote, then by staleness
+function groupByRemoteThenStale(branches: ParsedRef[]): BranchGroupNode[] {
+  const byRemote: Record<string, ParsedRef[]> = {};
+  for (const branch of branches) {
+    const remote = branch.remote || "local";
+    if (!byRemote[remote]) byRemote[remote] = [];
+    byRemote[remote].push(branch);
+  }
+  return Object.entries(byRemote).map(([remote, group]) => ({
+    name: remote === "local" ? "LOCAL BRANCHES" : remote.toUpperCase(),
+    children: groupByStaleness(group),
+  }));
+}
+
+function groupByStaleness(branches: ParsedRef[]): BranchGroupNode[] {
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+  const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+  const buckets: { name: string; filter: (b: ParsedRef) => boolean }[] = [
+    { name: "Active", filter: (b) => b.lastCommitDate >= thirtyDaysAgo },
+    {
+      name: "Older than 30 days",
+      filter: (b) =>
+        b.lastCommitDate < thirtyDaysAgo && b.lastCommitDate >= ninetyDaysAgo,
+    },
+    {
+      name: "Older than 90 days",
+      filter: (b) =>
+        b.lastCommitDate < ninetyDaysAgo && b.lastCommitDate >= oneYearAgo,
+    },
+    { name: "Older than 1 year", filter: (b) => b.lastCommitDate < oneYearAgo },
+  ];
+  return buckets
+    .map((bucket) => {
+      const bucketBranches = branches.filter(bucket.filter);
+      return bucketBranches.length > 0
+        ? ({
+            name: bucket.name as string | undefined,
+            branches: bucketBranches,
+          } as BranchGroupNode)
+        : undefined;
+    })
+    .filter((x): x is BranchGroupNode => x !== undefined);
+}
+
+function formatBranchGroups(
+  groups: BranchGroupNode[],
+  indent = 0,
+  isTopLevel = true
+): string[] {
+  const lines: string[] = [];
+  for (const [i, group] of groups.entries()) {
+    // Add an empty line above each heading except the very first at the top level
+    if (group.name && (!isTopLevel || i > 0)) {
+      lines.push("");
+    }
+    if (group.name) {
+      lines.push(
+        `${" ".repeat(indent)}${indent === 0 ? "# " : "## "}${group.name}`
+      );
+    }
+    if (group.children) {
+      lines.push(...formatBranchGroups(group.children, indent + 2, false));
+    }
+    if (group.branches) {
+      for (const branch of group.branches) {
+        lines.push(`${" ".repeat(indent)}${branch.ref}`);
+      }
+    }
+  }
+  return lines;
+}
