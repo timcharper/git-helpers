@@ -44,17 +44,6 @@ interface BranchesByOrigin {
   remotes: Record<string, ParsedRef[]>;
 }
 
-type BranchGroup = {
-  name: string | undefined;
-  branches: ParsedRef[];
-};
-
-type BranchGrouping = BranchGroup[];
-
-interface SubgroupingStrategy {
-  groupBranches(branches: ParsedRef[]): BranchGrouping;
-}
-
 interface CandidateState {
   candidateInstructions(): string;
   branchCandidates(): ParsedRef[];
@@ -142,22 +131,38 @@ function groupByOriginAlphabetically(branches: ParsedRef[]): BranchGroupNode[] {
   }));
 }
 
+function getLocalRemoteBranchMaps(
+  branches: ParsedRef[]
+): Record<string, string> {
+  const remoteBranchMaps: Record<string, string> = {};
+  for (const localBranch of branches) {
+    if (!localBranch.isLocal) continue;
+
+    for (const remoteBranch of branches) {
+      if (remoteBranch.isLocal) continue;
+      if (remoteBranch.branchName !== localBranch.branchName) continue;
+      remoteBranchMaps[localBranch.branchName] = remoteBranch.branchName;
+    }
+  }
+  return remoteBranchMaps;
+}
+
 function editBranchList(
-  state: CandidateState,
+  allBranches: ParsedRef[],
   useStaleGrouping: boolean
 ): string[] {
   const tempFile = tmpNameSync();
   const lines = [
-    state.candidateInstructions(),
+    "# The following is a list of all local and remote branches in your repository",
     "# To delete the branches, delete them from this list, and then save and quit",
   ];
 
-  const branches = state.branchCandidates();
   const groups: BranchGroupNode[] = useStaleGrouping
-    ? groupByRemoteThenStale(branches)
-    : groupByOriginAlphabetically(branches);
+    ? groupByRemoteThenStale(allBranches)
+    : groupByOriginAlphabetically(allBranches);
 
-  lines.push(...formatBranchGroups(groups));
+  const remoteBranchMaps = getLocalRemoteBranchMaps(allBranches);
+  lines.push(...formatBranchGroups(groups, remoteBranchMaps));
 
   Deno.writeTextFileSync(tempFile, lines.join("\n"));
 
@@ -176,9 +181,8 @@ function editBranchList(
   Deno.removeSync(tempFile);
 
   // Now, preserveBranches contains ref strings. We need to map these back to ParsedRef objects.
-  const allCandidates = state.branchCandidates();
   const erroneousBranches = preserveBranches.filter(
-    (b) => !allCandidates.some((c) => c.ref === b)
+    (b) => !allBranches.some((c) => c.ref === b)
   );
   if (erroneousBranches.length > 0) {
     console.error(
@@ -192,7 +196,10 @@ function editBranchList(
   return preserveBranches;
 }
 
-function deleteBranches(branchesForDeletion: string[]): void {
+function deleteBranches(
+  branchesForDeletion: string[],
+  refMap: Record<string, ParsedRef>
+): void {
   if (branchesForDeletion.length === 0) {
     console.log("No branches to delete.");
     Deno.exit(1);
@@ -216,21 +223,21 @@ function deleteBranches(branchesForDeletion: string[]): void {
     Deno.exit(0);
   }
 
-  const groupedBranches = groupByOrigin(
-    branchesForDeletion.map((ref) => ({
-      ref,
-      branchName: ref.split("/").pop() || "",
-      isLocal: ref.startsWith("refs/heads/"),
-      remote: ref.startsWith("refs/remotes/") ? ref.split("/")[2] : undefined,
-      lastCommitDate: new Date(),
-    }))
-  );
-  if (groupedBranches.local.length > 0) {
-    const args = [
-      "branch",
-      "-D",
-      ...groupedBranches.local.map((b) => b.branchName),
-    ];
+  // Get the ParsedRef objects from the refMap
+  const parsedBranches = branchesForDeletion
+    .map((ref) => refMap[ref])
+    .filter((branch): branch is ParsedRef => branch !== undefined);
+
+  if (parsedBranches.length !== branchesForDeletion.length) {
+    console.log("Warning: Some branches could not be found in the branch map");
+  }
+
+  // Use existing groupByOrigin function
+  const grouped = groupByOrigin(parsedBranches);
+
+  // Delete local branches
+  if (grouped.local.length > 0) {
+    const args = ["branch", "-D", ...grouped.local.map((b) => b.branchName)];
 
     if (DRY_RUN) {
       console.log(`Would run: git ${args.join(" ")}`);
@@ -238,7 +245,9 @@ function deleteBranches(branchesForDeletion: string[]): void {
       runCommandSync("git", args);
     }
   }
-  for (const [remote, branches] of Object.entries(groupedBranches.remotes)) {
+
+  // Delete remote branches
+  for (const [remote, branches] of Object.entries(grouped.remotes)) {
     const args = ["push", remote, ...branches.map((b) => `:${b.branchName}`)];
     if (DRY_RUN) {
       console.log(`Would run: git ${args.join(" ")}`);
@@ -340,15 +349,21 @@ function main(args: string[]) {
   }
 
   const branches = getBranches();
-  const state = new ConsiderAll(branches);
 
   try {
-    const preserveBranches = editBranchList(state, stale);
-    const branchesToDelete = state
-      .branchCandidates()
+    const preserveBranches = editBranchList(branches, stale);
+
+    // Create a mapping of ref to ParsedRef for deleteBranches
+    const refMap: Record<string, ParsedRef> = {};
+    for (const branch of branches) {
+      refMap[branch.ref] = branch;
+    }
+
+    const branchesToDelete = branches
       .filter((b) => !preserveBranches.includes(b.ref))
       .map((b) => b.ref);
-    deleteBranches(branchesToDelete);
+
+    deleteBranches(branchesToDelete, refMap);
   } catch (e) {
     if (e instanceof BranchNotFound) {
       console.error(e.message);
@@ -445,6 +460,7 @@ function groupByStaleness(branches: ParsedRef[]): BranchGroupNode[] {
 
 function formatBranchGroups(
   groups: BranchGroupNode[],
+  remoteBranchMaps: Record<string, string>,
   indent = 0,
   isTopLevel = true
 ): string[] {
@@ -460,11 +476,24 @@ function formatBranchGroups(
       );
     }
     if (group.children) {
-      lines.push(...formatBranchGroups(group.children, indent + 2, false));
+      lines.push(
+        ...formatBranchGroups(
+          group.children,
+          remoteBranchMaps,
+          indent + 2,
+          false
+        )
+      );
     }
     if (group.branches) {
       for (const branch of group.branches) {
-        lines.push(`${" ".repeat(indent)}${branch.ref}`);
+        let noRemoteIdentifier: string = "";
+        if (branch.isLocal) {
+          if (!remoteBranchMaps[branch.branchName]) {
+            noRemoteIdentifier = ` # (no remote)`;
+          }
+        }
+        lines.push(`${" ".repeat(indent)}${branch.ref}${noRemoteIdentifier}`);
       }
     }
   }
