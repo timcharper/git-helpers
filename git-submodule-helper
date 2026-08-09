@@ -1,7 +1,7 @@
 #!/bin/bash
 
-if [ "`which md5`" == "" ]; then
-  if [ "`which md5sum`" == "" ]; then
+if [ "`which md5 2> /dev/null`" == "" ]; then
+  if [ "`which md5sum 2> /dev/null`" == "" ]; then
     echo "Couldn't find md5 or md5sum.  Aborting"
     exit 1
   fi
@@ -83,8 +83,17 @@ submodule_helper_stash_status () {
 }
 
 submodule_helper_attach () {
-  if (cat $GIT_DIR/HEAD | grep ref: 1> /dev/null) ; then
+  local prefix="$1"
+  echo
+  echo "${prefix}"
+  echo ----------------------------------------
+  if [ "$(git rev-parse --abbrev-ref HEAD)" != "HEAD" ]; then
     echo "You're already on a branch"
+    list_submodules | while read submodule; do
+        pushd $submodule > /dev/null
+        submodule_helper_attach "${prefix}${submodule}"
+        popd > /dev/null
+    done
     return 1
   fi
   current_rev=$(git rev-parse HEAD)
@@ -98,7 +107,8 @@ submodule_helper_attach () {
   rev=$(echo $line | awk '{print $1}')
   ref=$(echo $line | awk '{print $3}')
   if ( echo $ref | egrep '^refs/heads/' > /dev/null ); then
-    echo "ref: $ref" > $GIT_DIR/HEAD
+    echo "Local branch ${ref} matches"
+    git checkout `echo "$ref" | sed 's|^refs/heads/||'`
     return 0
   fi
 
@@ -106,13 +116,16 @@ submodule_helper_attach () {
     echo "Remote branch ${ref} matches"
     short_ref=${ref#refs/remotes/}
     local_ref=${ref#*/*/*/}
-    divergent_commits=$(git rev-list $ref..$local_ref)
+    if git show-ref --verify --quiet "refs/heads/$branch_name"; then
+      divergent_commits=$(git rev-list $ref..$local_ref)
+    else
+      divergent_commits=""
+    fi
     if [ "$divergent_commits" == "" ]; then
-      echo "fastforwarding $local_ref to $ref"
       git branch -f "$local_ref" "$ref"
       git checkout "$local_ref"
     fi
-    return 1
+    return 0
   fi
 }
 
@@ -173,7 +186,7 @@ submodule_helper_update () {
         (git show "$version" 2> /dev/null 1> /dev/null) || git fetch
       fi
       git checkout $version
-      submodule_helper_attach
+      submodule_helper_attach $submodule
     fi
     popd > /dev/null
   done
@@ -216,6 +229,7 @@ commands:
   status  - See the status for all submodules
 
   attach  - Re-attach your HEAD to a branch that matches your current rev.
+            Re-attach also HEAD of all submodules.
 
   add-folder
           - add a folder that has been cloned as a submodule already
@@ -261,7 +275,7 @@ case "$1" in
     submodule_helper_status /
     ;;
   attach)
-    submodule_helper_attach
+    submodule_helper_attach /
     ;;
   help)
     submodule_helper_help
