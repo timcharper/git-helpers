@@ -1,0 +1,319 @@
+#!/usr/bin/env -S deno run --allow-all
+
+import yargs from "https://deno.land/x/yargs@v17.7.2-deno/deno.ts";
+
+const DEBUG = !!Deno.env.get("DEBUG");
+const DRY_RUN = !!Deno.env.get("DRY_RUN");
+
+function tmpNameSync(prefix: string = "tmp"): string {
+  const uniqueId = crypto.randomUUID();
+  return `${prefix}-${uniqueId}`;
+}
+
+function runCommandSync(command: string, args: string[]): string {
+  if (DEBUG) {
+    console.log(`+ ${command} ${args.join(" ")}`);
+  }
+  const result = new Deno.Command(command, {
+    args: args,
+  }).outputSync();
+
+  const stderr = new TextDecoder().decode(result.stderr);
+  if (stderr) {
+    console.error(stderr);
+  }
+
+  if (!result.success) {
+    const stdout = new TextDecoder().decode(result.stdout);
+    if (stdout) {
+      console.log(stdout);
+    }
+    throw new Error(
+      `Command failed: ${command} ${args.join(" ")} (exit code: ${result.code})`
+    );
+  }
+
+  return new TextDecoder().decode(result.stdout);
+}
+
+function runCommandSyncSilent(command: string, args: string[]): string {
+  const result = new Deno.Command(command, {
+    args: args,
+  }).outputSync();
+  return new TextDecoder().decode(result.stdout);
+}
+
+interface ParsedWorktree {
+  path: string;
+  commit: string;
+  ref: string;
+  isDirty: boolean;
+  parentFolder: string;
+}
+
+function getCommonParent(paths: string[]): string {
+  if (paths.length === 0) return "";
+  if (paths.length === 1) return paths[0].split("/").slice(0, -1).join("/");
+
+  const parts = paths.map((p) => p.split("/"));
+  let commonLength = 0;
+
+  for (let i = 0; i < Math.min(...parts.map((p) => p.length)); i++) {
+    if (parts.every((p) => p[i] === parts[0][i])) {
+      commonLength = i + 1;
+    } else {
+      break;
+    }
+  }
+
+  return parts[0].slice(0, commonLength).join("/");
+}
+
+function getParentFolder(path: string, commonParent: string): string {
+  if (!path.startsWith(commonParent)) {
+    return path;
+  }
+  const relative = path.slice(commonParent.length + 1);
+  const parts = relative.split("/");
+  if (parts.length === 1) {
+    return path.split("/").slice(0, -1).join("/");
+  }
+  return parts[0];
+}
+
+function isDirtyWorktree(path: string): boolean {
+  try {
+    const output = runCommandSyncSilent("git", [
+      "-C",
+      path,
+      "status",
+      "--porcelain",
+    ]);
+    return output.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function parseWorktreeOutput(output: string): ParsedWorktree[] {
+  const worktrees: ParsedWorktree[] = [];
+  const lines = output.split("\n");
+
+  let currentWorktree: Partial<ParsedWorktree> | null = null;
+
+  for (const line of lines) {
+    if (line.startsWith("worktree ")) {
+      if (currentWorktree && currentWorktree.path) {
+        worktrees.push(currentWorktree as ParsedWorktree);
+      }
+      currentWorktree = {
+        path: line.slice(9).trim(),
+        parentFolder: "",
+      };
+    } else if (line.startsWith("HEAD ")) {
+      if (currentWorktree) {
+        currentWorktree.commit = line.slice(5).trim();
+      }
+    } else if (line.startsWith("branch ")) {
+      if (currentWorktree) {
+        currentWorktree.ref = line.slice(7).trim();
+      }
+    } else if (line.startsWith("detached")) {
+      if (currentWorktree) {
+        currentWorktree.ref = "(detached)";
+      }
+    }
+  }
+
+  if (currentWorktree && currentWorktree.path) {
+    worktrees.push(currentWorktree as ParsedWorktree);
+  }
+
+  // Compute parent folders and dirty status
+  const commonParent = getCommonParent(worktrees.map((w) => w.path));
+
+  for (const worktree of worktrees) {
+    worktree.parentFolder = getParentFolder(worktree.path, commonParent);
+    worktree.isDirty = isDirtyWorktree(worktree.path);
+  }
+
+  return worktrees;
+}
+
+function groupByParentFolder(
+  worktrees: ParsedWorktree[]
+): Record<string, ParsedWorktree[]> {
+  const grouped: Record<string, ParsedWorktree[]> = {};
+  for (const wt of worktrees) {
+    const folder = wt.parentFolder;
+    if (!grouped[folder]) grouped[folder] = [];
+    grouped[folder].push(wt);
+  }
+  return grouped;
+}
+
+function editWorktreeList(allWorktrees: ParsedWorktree[]): string[] {
+  const tempFile = tmpNameSync();
+  const lines = [
+    "# The following is a list of all git worktrees in this repository",
+    "# To delete worktrees, delete them from this list, and then save and quit",
+    "# Metadata format: commit ; ref ; dirty",
+  ];
+
+  const grouped = groupByParentFolder(allWorktrees);
+  const folders = Object.keys(grouped).sort();
+
+  for (const folder of folders) {
+    if (lines.length > 3) {
+      lines.push("");
+    }
+    lines.push(`# ${folder}`);
+    const worktreesInFolder = grouped[folder].sort((a, b) =>
+      a.path.localeCompare(b.path)
+    );
+    for (const wt of worktreesInFolder) {
+      const dirtyStatus = wt.isDirty ? "yes" : "no";
+      const metadata = `${wt.commit.slice(0, 7)} ; ${wt.ref} ; dirty: ${dirtyStatus}`;
+      lines.push(`${wt.path} ; ${metadata}`);
+    }
+  }
+
+  Deno.writeTextFileSync(tempFile, lines.join("\n"));
+
+  new Deno.Command(Deno.env.get("EDITOR") || "vi", {
+    args: [tempFile],
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).outputSync();
+
+  const preserveWorktrees = Deno.readTextFileSync(tempFile)
+    .split("\n")
+    .map((line) => line.replace(/#.+$/, "").replace(/\0/g, "").trim())
+    .filter((line) => line.length > 0 && line.includes("/"))
+    .map((line) => line.split(";")[0].trim());
+
+  Deno.removeSync(tempFile);
+
+  const erroneousWorktrees = preserveWorktrees.filter(
+    (path) => !allWorktrees.some((w) => w.path === path)
+  );
+
+  if (erroneousWorktrees.length > 0) {
+    console.error(
+      "Error! Unrecognized worktrees:\n" +
+        erroneousWorktrees.map((p) => ` - ${p}`).join("\n")
+    );
+    Deno.exit(1);
+  }
+
+  return preserveWorktrees;
+}
+
+function deleteWorktrees(
+  worktreesForDeletion: ParsedWorktree[],
+  isDirtyAny: boolean
+): void {
+  if (worktreesForDeletion.length === 0) {
+    console.log("No worktrees to delete.");
+    Deno.exit(1);
+  }
+
+  console.log(
+    "Deleting worktrees:\n" +
+      worktreesForDeletion.map((w) => ` - ${w.path}`).join("\n")
+  );
+
+  if (isDirtyAny) {
+    console.log(
+      "\n⚠️  WARNING: Some worktrees have uncommitted changes (dirty: yes)"
+    );
+  }
+
+  // are you sure?
+  let confirmation: string | undefined = undefined;
+  while (confirmation === undefined || !["y", "n"].includes(confirmation)) {
+    const prompt_text = isDirtyAny
+      ? "Are you sure you want to delete these worktrees (including dirty ones)? [y/N] "
+      : "Are you sure you want to delete these worktrees? [y/N] ";
+    confirmation = prompt(prompt_text)?.toLocaleLowerCase();
+  }
+
+  if (confirmation === "n") {
+    console.log("Aborting.");
+    Deno.exit(0);
+  }
+
+  // Additional confirmation if any are dirty
+  if (isDirtyAny) {
+    let dirtyConfirmation: string | undefined = undefined;
+    while (
+      dirtyConfirmation === undefined ||
+      !["y", "n"].includes(dirtyConfirmation)
+    ) {
+      dirtyConfirmation = prompt(
+        "Delete dirty worktrees? This will lose uncommitted changes. [y/N] "
+      )?.toLocaleLowerCase();
+    }
+    if (dirtyConfirmation === "n") {
+      console.log("Aborting.");
+      Deno.exit(0);
+    }
+  }
+
+  for (const wt of worktreesForDeletion) {
+    const args = ["worktree", "remove", wt.path];
+
+    if (DRY_RUN) {
+      console.log(`Would run: git ${args.join(" ")}`);
+    } else {
+      try {
+        runCommandSync("git", args);
+        console.log(`Deleted: ${wt.path}`);
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        console.error(`Failed to delete ${wt.path}: ${errorMsg}`);
+      }
+    }
+  }
+}
+
+function main(args: string[]) {
+  const argv = yargs(args)
+    .scriptName("git-cleanup-worktrees")
+    .usage("Usage: $0 [options]")
+    .strict()
+    .parseSync();
+
+  const output = runCommandSync("git", ["worktree", "list", "--porcelain"]);
+  const worktrees = parseWorktreeOutput(output);
+
+  if (worktrees.length === 0) {
+    console.log("No worktrees to manage.");
+    Deno.exit(0);
+  }
+
+  try {
+    const preserveWorktrees = editWorktreeList(worktrees);
+
+    const worktreesForDeletion = worktrees.filter(
+      (w) => !preserveWorktrees.includes(w.path)
+    );
+
+    if (worktreesForDeletion.length === 0) {
+      console.log("No worktrees to delete.");
+      Deno.exit(0);
+    }
+
+    const isDirtyAny = worktreesForDeletion.some((w) => w.isDirty);
+
+    deleteWorktrees(worktreesForDeletion, isDirtyAny);
+  } catch (e) {
+    console.error(e);
+    throw e;
+  }
+}
+
+if (import.meta.main) {
+  main(Deno.args);
+}
