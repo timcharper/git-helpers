@@ -262,7 +262,11 @@ function deleteWorktrees(
   }
 
   for (const wt of worktreesForDeletion) {
-    const args = ["worktree", "remove", wt.path];
+    const args = ["worktree", "remove"];
+    if (wt.isDirty) {
+      args.push("--force");
+    }
+    args.push(wt.path);
 
     if (DRY_RUN) {
       console.log(`Would run: git ${args.join(" ")}`);
