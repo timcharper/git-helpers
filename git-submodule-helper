@@ -1,35 +1,11 @@
 #!/bin/bash
 
-if [ "`which md5`" == "" ]; then
-  if [ "`which md5sum`" == "" ]; then
-    echo "Couldn't find md5 or md5sum.  Aborting"
-    exit 1
-  fi
-
-  md5 () {
-    md5sum | cut -f 1 -d " "
-  }
-fi
-
 list_submodules () {
   git ls-files --stage | grep "^160000 " | cut -f 2
 }
 
 submodule_url () {
   git config "submodule.$1.url"
-}
-
-submodule_md5 () {
-  local path="$1"
-  local url=`submodule_url "$path"`
-  local string="$path $url"
-  printf "$string" | md5
-}
-
-submodule_stash_path () {
-  local path="$1"
-  [ ! -d "$GIT_DIR/submodule_cache/" ] && mkdir "$GIT_DIR/submodule_cache"
-  printf "$GIT_DIR/submodule_cache/`submodule_md5 "$path"`"
 }
 
 submodule_helper_stash () {
